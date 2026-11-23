@@ -1,0 +1,13 @@
+package-as: HDMapLite
+
+# CurseForge installs these alongside this addon. The art pack declares no
+# CurseForge dependencies of its own, so this does not pull in the full High
+# Fidelity World Map addon. Not a TOC dependency: the art pack's TOC requires
+# HighFidelityWorldMap, so it never loads on its own, and a TOC dependency on
+# it would stop this addon loading too.
+required-dependencies:
+  - hfwm-art
+
+ignore:
+  - tests
+  - .luacheckrc
