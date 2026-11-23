@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: HD Map Lite
+## Notes: High-resolution world, continent and zone map art. Needs the High Fidelity World Map art pack for the world and continent maps. No options, no hooks.
+## Version: @project-version@
+## Category: Map
+## IconTexture: Interface\Icons\INV_Misc_Map02
+
+Zones.lua
+HDMapLite.lua
