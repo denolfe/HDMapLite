@@ -23,7 +23,8 @@ off, disable the addon.
 
 ## Why it shouldn't conflict
 
-It adds one frame of its own to the map canvas and draws into it. It never
+It adds one frame of its own to the map canvas (with a child layer for each
+of the last three maps drawn) and draws into it. It never
 hides, moves, re-levels, hooks or writes a field on anything of Blizzard's.
 
 | High Fidelity World Map does | HD Map Lite |
@@ -76,14 +77,18 @@ Turn on BugSack/BugGrabber, and `/console taintLog 1` (the log goes to
    art.
 7. **Fallback:** open a dungeon map, Ironforge and Deeprun Tram. You should see
    the stock map and no blue box.
-8. **Resize:** maximise and minimise the map, then zoom in and out. Tiles
+8. **No blink:** switch between a zone, its continent and the world a few
+   times. The HD art should be there in the same frame as the stock map, with
+   no flash of stock art. A map you've never opened this session may still
+   take a moment the first time while its files load from disk.
+9. **Resize:** maximise and minimise the map, then zoom in and out. Tiles
    should stay aligned.
-9. **Combat:** open the map, switch zones and close it, in combat. No
+10. **Combat:** open the map, switch zones and close it, in combat. No
    "action blocked" messages.
-10. **`/reload` mid-combat**, then open the map.
-11. **Gamepad:** switch to the gamepad UI and open the map. Focus navigation
+11. **`/reload` mid-combat**, then open the map.
+12. **Gamepad:** switch to the gamepad UI and open the map. Focus navigation
    should behave as before.
-12. **Taint:** after all of the above, search `taint.log` for `HDMapLite`.
+13. **Taint:** after all of the above, search `taint.log` for `HDMapLite`.
 
 Known interaction: *Spoken Places*' map highlight uses the same frame level.
 Whether it draws above or below the HD art is up to the client; it's cosmetic.

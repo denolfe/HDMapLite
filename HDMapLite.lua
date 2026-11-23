@@ -1,8 +1,9 @@
 -- HD Map Lite: draws high-resolution art over the world map, and nothing else.
 --
 -- One frame of our own sits on the map canvas, just above Blizzard's
--- exploration overlays and below every pin. Maps we have no art for are left
--- alone (the overlay hides).
+-- exploration overlays and below every pin, holding one child layer per
+-- recently drawn map. Maps we have no art for are left alone (the overlay
+-- hides).
 --
 -- Art:
 --   World / Kalimdor / Eastern Kingdoms: the stitched tiles in the
@@ -69,64 +70,128 @@ local EXPLORATION_LEVEL = "PIN_FRAME_LEVEL_MAP_EXPLORATION"
 local MASK_SETTLE_DELAY = 0.2
 local OCEAN = {} -- sentinel source: an ocean-coloured piece instead of a file
 
-local overlay, backdrop
-local pool, active, maskOf = {}, {}, {}
-local maskPool, activeMasks = {}, {}
+-- Texture files load asynchronously, so a texture that has to (re)load its
+-- file shows nothing for a few frames. To keep the art from blinking:
+--   * each recently drawn map keeps its own layer (a child frame of the
+--     overlay) with its textures still holding their files, so switching back
+--     to it is just a Show;
+--   * redrawing a map reuses its layer's textures in the same order, so each
+--     one is handed the file it already has and nothing reloads.
+-- Only the least recently used layer gives its files up.
+local MAX_LAYERS = 3 -- e.g. a zone, its continent and the world
+
+local overlay
+local layers = {} -- least recently used first
+local current -- the layer being drawn or shown, nil on maps we leave alone
 local hdAvailable -- nil until the first HD draw tests it
 local hdFailed = false -- set by a draw whose HD art didn't resolve
-local drawnMapID, drawnW, drawnH
 local settledMapID -- map whose masks have had their settle redraw
 local pending, settlePending = false, false
 
--- Pools ---------------------------------------------------------------------
+-- Layers --------------------------------------------------------------------
 
+local function NewLayer()
+	local frame = CreateFrame("Frame", nil, overlay)
+	frame:SetAllPoints(overlay)
+	frame:EnableMouse(false)
+	local backdrop = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
+	backdrop:SetAllPoints(frame)
+	backdrop:SetColorTexture(OCEAN_R, OCEAN_G, OCEAN_B, 1)
+	return { frame = frame, backdrop = backdrop, tex = {}, n = 0, masks = {}, nm = 0, maskOf = {} }
+end
+
+-- The next texture of the layer being drawn, in drawing order.
 local function Acquire(drawLayer)
-	local tex = pool[#pool]
-	if tex then
-		pool[#pool] = nil
-	else
-		tex = overlay:CreateTexture(nil, "ARTWORK")
+	local L = current
+	local i = L.n + 1
+	L.n = i
+	local tex = L.tex[i]
+	if not tex then
+		tex = L.frame:CreateTexture(nil, "ARTWORK")
+		L.tex[i] = tex
 	end
+	local mask = L.maskOf[tex]
+	if mask then
+		-- Re-added below if still wanted; re-adding also makes the client
+		-- re-read a mask whose file has loaded since (see Settle).
+		tex:RemoveMaskTexture(mask)
+		L.maskOf[tex] = nil
+	end
+	tex:ClearAllPoints()
 	tex:SetDrawLayer(drawLayer)
 	tex:Show()
-	active[#active + 1] = tex
 	return tex
 end
 
 local function AcquireMask()
-	local mask = maskPool[#maskPool]
-	if mask then
-		maskPool[#maskPool] = nil
-	else
-		mask = overlay:CreateMaskTexture()
+	local L = current
+	local i = L.nm + 1
+	L.nm = i
+	local mask = L.masks[i]
+	if not mask then
+		mask = L.frame:CreateMaskTexture()
+		L.masks[i] = mask
 	end
-	activeMasks[#activeMasks + 1] = mask
+	mask:ClearAllPoints()
 	return mask
 end
 
-local function ReleaseAll()
-	for i = #active, 1, -1 do
-		local tex = active[i]
-		local mask = maskOf[tex]
+local function BeginLayer(L)
+	L.n, L.nm = 0, 0
+end
+
+-- Retire the textures this draw didn't use. They drop their files: a redraw of
+-- the same map only grows (more explored), so leftovers are art we no longer
+-- show. Masks keep theirs: they are small, and a mask that has to reload draws
+-- opaque until it does.
+local function FinishLayer(L)
+	for i = L.n + 1, #L.tex do
+		local tex = L.tex[i]
+		local mask = L.maskOf[tex]
 		if mask then
 			tex:RemoveMaskTexture(mask)
-			maskOf[tex] = nil
+			L.maskOf[tex] = nil
 		end
 		tex:Hide()
 		tex:ClearAllPoints()
-		-- Drop the file reference so the client can unload it: one HD
-		-- continent is 704 uncompressed tiles.
 		tex:SetTexture(nil)
-		active[i] = nil
-		pool[#pool + 1] = tex
 	end
-	-- Masks keep their file: they are small, and a mask that has to reload
-	-- draws opaque until it does.
-	for i = #activeMasks, 1, -1 do
-		local mask = activeMasks[i]
-		mask:ClearAllPoints()
-		activeMasks[i] = nil
-		maskPool[#maskPool + 1] = mask
+	for i = L.nm + 1, #L.masks do
+		L.masks[i]:ClearAllPoints()
+	end
+end
+
+local function ClearLayer(L)
+	BeginLayer(L)
+	FinishLayer(L)
+end
+
+-- The layer for *mapID*: its own if it has one, else a new one or the least
+-- recently used one, emptied. Marks it most recently used.
+local function LayerFor(mapID)
+	local L
+	for i, l in ipairs(layers) do
+		if l.mapID == mapID then
+			L = table.remove(layers, i)
+			break
+		end
+	end
+	if not L then
+		if #layers >= MAX_LAYERS then
+			L = table.remove(layers, 1)
+			ClearLayer(L)
+		else
+			L = NewLayer()
+		end
+		L.mapID, L.dirty = mapID, true
+	end
+	layers[#layers + 1] = L
+	return L
+end
+
+local function MarkAllDirty()
+	for _, L in ipairs(layers) do
+		L.dirty = true
 	end
 end
 
@@ -140,11 +205,11 @@ local function Piece(src, x0, y0, tw, th, cx0, cy0, cx1, cy1, mask)
 		return true
 	end
 	local tex = Acquire(src == OCEAN and "BACKGROUND" or "ARTWORK")
-	tex:SetPoint("TOPLEFT", overlay, "TOPLEFT", ix0, -iy0)
+	tex:SetPoint("TOPLEFT", current.frame, "TOPLEFT", ix0, -iy0)
 	tex:SetSize(ix1 - ix0, iy1 - iy0)
 	if mask then
 		tex:AddMaskTexture(mask)
-		maskOf[tex] = mask
+		current.maskOf[tex] = mask
 	end
 	if src == OCEAN then
 		tex:SetTexCoord(0, 1, 0, 1)
@@ -205,8 +270,8 @@ local function ArtLayer(mapID)
 	if cached == nil then
 		cached = false
 		if C_Map and C_Map.GetMapArtLayers then
-			local ok, layers = pcall(C_Map.GetMapArtLayers, mapID)
-			local layer = ok and type(layers) == "table" and layers[1]
+			local ok, artLayers = pcall(C_Map.GetMapArtLayers, mapID)
+			local layer = ok and type(artLayers) == "table" and artLayers[1]
 			if layer and (layer.layerWidth or 0) > 0 and (layer.layerHeight or 0) > 0 then
 				cached = layer
 			end
@@ -377,7 +442,7 @@ local function Reveal(zoneID, rect, w, h, paint, art)
 						-- than relying on texcoords to crop a MaskTexture;
 						-- pieces are clipped to the visible part anyway.
 						local mask = AcquireMask()
-						mask:SetPoint("TOPLEFT", overlay, "TOPLEFT", x0, -y0)
+						mask:SetPoint("TOPLEFT", current.frame, "TOPLEFT", x0, -y0)
 						mask:SetSize(fw * kx, fh * ky)
 						-- CLAMP, not CLAMPTOBLACKADDITIVE: it keeps adjoining
 						-- overlay tiles from fading at their shared seam.
@@ -399,7 +464,7 @@ local function DrawFogged(mapID, w, h, paint, art)
 	if not ExplorationAvailable() then
 		return false
 	end
-	backdrop:Hide()
+	current.backdrop:Hide()
 	for _, c in ipairs(Candidates(mapID)) do
 		Reveal(c[1], c[2], w, h, paint, art)
 		if hdFailed then
@@ -416,7 +481,7 @@ local function DrawZone(zone, mapID, w, h)
 		return true
 	end
 	-- No fog on this map (or no way to read it): the whole zone.
-	backdrop:Show()
+	current.backdrop:Show()
 	ZoneTiles(zone, w, h, 0, 0, w, h)
 	return true
 end
@@ -437,14 +502,14 @@ local function DrawHD(prefix, mapID, w, h)
 		return false
 	end
 	if not DrawFogged(mapID, w, h, HDTiles, prefix) then
-		backdrop:Show()
+		current.backdrop:Show()
 		HDTiles(prefix, w, h, 0, 0, w, h)
 	end
 	if hdFailed then
 		-- The client couldn't resolve the art: fall back to the stock map for
 		-- the rest of the session rather than an empty sea.
 		hdAvailable = false
-		ReleaseAll()
+		ClearLayer(current)
 		return false
 	end
 	return true
@@ -474,10 +539,22 @@ end
 
 local Schedule
 
+-- Redo the open map once its masks have loaded. The redraw reuses every
+-- texture and file in place, so it costs no blink.
 local function Settle()
 	settlePending = false
-	drawnMapID = nil
+	if current then
+		current.dirty = true
+	end
 	Schedule()
+end
+
+local function HideLayersBut(keep)
+	for _, L in ipairs(layers) do
+		if L ~= keep then
+			L.frame:Hide()
+		end
+	end
 end
 
 local function Draw()
@@ -495,7 +572,7 @@ local function Draw()
 		overlay:SetParent(canvas)
 		overlay:ClearAllPoints()
 		overlay:SetAllPoints(canvas)
-		drawnMapID = nil
+		MarkAllDirty()
 	end
 	local level = OverlayLevel(map, canvas)
 	if overlay:GetFrameLevel() ~= level then
@@ -504,25 +581,41 @@ local function Draw()
 
 	local mapID = map:GetMapID()
 	local w, h = canvas:GetSize()
-	if mapID == drawnMapID and w == drawnW and h == drawnH then
+	if not (mapID and w > 0 and h > 0 and (ZONES[mapID] or HD_MAPS[mapID])) then
+		-- A map we leave alone. Cached layers stay loaded for coming back.
+		current = nil
+		HideLayersBut(nil)
+		overlay:Hide()
 		return
 	end
-	ReleaseAll()
-	drawnMapID, drawnW, drawnH = mapID, w, h
-	hdFailed = false
+	if current and current.mapID == mapID and current.w == w and current.h == h and not current.dirty then
+		return
+	end
 
-	local drawn = false
-	if mapID and w > 0 and h > 0 then
+	local L = LayerFor(mapID)
+	current = L
+	HideLayersBut(L)
+	if L.dirty or L.w ~= w or L.h ~= h then
+		L.w, L.h, L.dirty = w, h, false
+		BeginLayer(L)
+		hdFailed = false
+		local drawn
 		local zone = ZONES[mapID]
 		if zone then
 			drawn = DrawZone(zone, mapID, w, h)
-		elseif HD_MAPS[mapID] then
+		else
 			drawn = DrawHD(HD_MAPS[mapID], mapID, w, h)
 		end
+		FinishLayer(L)
+		L.drawn = drawn
+		if not drawn then
+			L.dirty = true -- try again next visit rather than cache a failure
+		end
 	end
-	overlay:SetShown(drawn)
+	L.frame:SetShown(L.drawn)
+	overlay:SetShown(L.drawn)
 
-	if drawn and #activeMasks > 0 and settledMapID ~= mapID and not settlePending then
+	if L.drawn and L.nm > 0 and settledMapID ~= mapID and not settlePending then
 		settledMapID = mapID
 		settlePending = true
 		C_Timer.After(MASK_SETTLE_DELAY, Settle)
@@ -534,13 +627,31 @@ local function RunDraw()
 	xpcall(Draw, geterrorhandler())
 end
 
--- Coalesce bursts (map change + canvas resize arrive together) into one draw
--- on the next frame, outside Blizzard's call stack.
+-- Coalesce bursts (exploration updates, resizes, settles) into one draw on the
+-- next frame.
 Schedule = function() -- check-ignore: global-write (assigns the `local Schedule` forward-declared above Draw)
 	if not pending then
 		pending = true
 		C_Timer.After(0, RunDraw)
 	end
+end
+
+-- Map changes draw at once, in the same frame as Blizzard's own art, so the
+-- new map never shows a frame without ours. MapSet fires just before the
+-- client resizes the canvas to the new map's art layer; when that size will
+-- differ, wait for it (OnSizeChanged) instead of drawing twice.
+local function OnMapSet(_, mapID)
+	local map = WorldMapFrame
+	local canvas = map and map.ScrollContainer and map.ScrollContainer.Child
+	local layer = type(mapID) == "number" and ArtLayer(mapID)
+	if canvas and layer then
+		local w, h = canvas:GetSize()
+		if w ~= layer.layerWidth or h ~= layer.layerHeight then
+			Schedule()
+			return
+		end
+	end
+	xpcall(Draw, geterrorhandler())
 end
 
 -- Setup ---------------------------------------------------------------------
@@ -566,7 +677,7 @@ end
 
 local function OnMapShown()
 	settledMapID = nil -- masks may have been unloaded while the map was shut
-	Schedule()
+	xpcall(Draw, geterrorhandler())
 end
 
 local function Init()
@@ -579,15 +690,11 @@ local function Init()
 	overlay:EnableMouse(false)
 	overlay:Hide()
 
-	backdrop = overlay:CreateTexture(nil, "BACKGROUND")
-	backdrop:SetAllPoints(overlay)
-	backdrop:SetColorTexture(OCEAN_R, OCEAN_G, OCEAN_B, 1)
-
 	-- Our own frame tracks the canvas size, so no hook on Blizzard's.
 	overlay:SetScript("OnSizeChanged", Schedule)
 
 	if EventRegistry and EventRegistry.RegisterCallback then
-		EventRegistry:RegisterCallback("MapCanvas.MapSet", Schedule, callbackOwner)
+		EventRegistry:RegisterCallback("MapCanvas.MapSet", OnMapSet, callbackOwner)
 		EventRegistry:RegisterCallback("WorldMapOnShow", OnMapShown, callbackOwner)
 		-- The overlay is hidden on maps we don't draw, and a hidden frame may
 		-- not report OnSizeChanged, so resizes come from these too.
@@ -598,10 +705,17 @@ local function Init()
 	C_Timer.After(NOTICE_DELAY, NoticeIfArtMissing)
 end
 
--- New ground explored with the map open: redraw if the open map shows fog.
+-- New ground explored: every cached fogged map is stale. Redraw the open one
+-- (in place, so only the new ground appears); the rest redraw when next shown.
 local function OnExplorationUpdated()
-	if drawnMapID and (FOG[drawnMapID] or HD_MAPS[drawnMapID]) then
-		drawnMapID = nil
+	local any = false
+	for _, L in ipairs(layers) do
+		if FOG[L.mapID] or HD_MAPS[L.mapID] then
+			L.dirty = true
+			any = any or L == current
+		end
+	end
+	if any then
 		Schedule()
 	end
 end
@@ -627,22 +741,42 @@ end)
 
 -- Exposed for tests only; nothing in game reads it.
 ns._test = {
-	Active = active,
-	ActiveMasks = activeMasks,
-	MaskOf = maskOf,
+	-- The current layer's textures and masks in use, in drawing order.
+	Active = function()
+		local t = {}
+		for i = 1, current and current.n or 0 do
+			t[i] = current.tex[i]
+		end
+		return t
+	end,
+	ActiveMasks = function()
+		local t = {}
+		for i = 1, current and current.nm or 0 do
+			t[i] = current.masks[i]
+		end
+		return t
+	end,
+	MaskOf = function(tex)
+		return current and current.maskOf[tex]
+	end,
 	ActiveCount = function()
-		return #active
+		return current and current.n or 0
+	end,
+	Layers = function()
+		return layers
 	end,
 	Overlay = function()
 		return overlay
 	end,
 	Backdrop = function()
-		return backdrop
+		return current and current.backdrop
 	end,
 	ResetHD = function()
 		hdAvailable = nil
+		MarkAllDirty()
 	end,
 	ResetGeometry = function()
+		MarkAllDirty()
 		wipe(layerCache)
 		wipe(parentCache)
 		wipe(rectCache)

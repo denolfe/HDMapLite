@@ -19,6 +19,8 @@ function W:GetSize() return self.w, self.h end
 function W:SetTexCoord(...) self.tc = { ... } end
 function W:SetDrawLayer(l) self.layer = l end
 function W:SetTexture(src, wrapH)
+	-- a texture handed a different file has to load it (and blinks meanwhile)
+	if src ~= nil and src ~= self.src then _G.__loads = (_G.__loads or 0) + 1 end
 	self.src, self.color, self.wrap = src, nil, wrapH
 	if type(src) == "string" and _G.__missingArt then return false end
 	return true
@@ -118,6 +120,11 @@ describe("HDMapLite", function()
 		FireCallback("MapCanvas.MapSet", mapID)
 		FlushTimers()
 	end
+	-- New exploration data, announced the way the client does.
+	local function explore(data)
+		_G.__explored = data
+		Loader.scripts.OnEvent(Loader, "MAP_EXPLORATION_UPDATED")
+	end
 	local function inside(tex, x0, y0, x1, y1)
 		local x, y = tex.point[4], -tex.point[5]
 		return x >= x0 - 1e-6 and y >= y0 - 1e-6 and x + tex.w <= x1 + 1e-6 and y + tex.h <= y1 + 1e-6
@@ -168,7 +175,7 @@ describe("HDMapLite", function()
 		assert.is_true(T.Overlay():IsShown())
 		assert.is_true(T.Backdrop():IsShown())
 		local sx = 1002 / zone.layerW
-		for _, tex in ipairs(T.Active) do
+		for _, tex in ipairs(T.Active()) do
 			assert(inside(tex, 0, 0, 1002, 668), "inside canvas")
 			assert(type(tex.src) == "number", "fdid")
 			assert.is_nil(tex.masks and tex.masks[1])
@@ -178,13 +185,13 @@ describe("HDMapLite", function()
 	end)
 
 	it("skips redraw when nothing changed", function()
-		local first = T.Active[1]
+		local first = T.Active()[1]
 		open(STORMWIND)
-		assert.are.equal(first, T.Active[1])
+		assert.are.equal(first, T.Active()[1])
 	end)
 
 	it("shows only the stock map on a fogged zone with nothing explored", function()
-		_G.__explored = {}
+		explore({})
 		open(ELWYNN)
 		assert.are.equal(0, T.ActiveCount())
 		assert.is_false(T.Backdrop():IsShown())
@@ -203,14 +210,14 @@ describe("HDMapLite", function()
 	end)
 
 	it("draws HD only under explored overlays, masked by their files", function()
-		_G.__explored = { [ELWYNN] = {
+		explore({ [ELWYNN] = {
 			Overlay(100, 50, 300, 200, { 111, 112 }),
 			Overlay(600, 300, 100, 100, { 999 }, true), -- hover highlight: ignored
-		} }
+		} })
 		open(STORMWIND) -- leave and come back, so the zone is drawn fresh
 		open(ELWYNN)
-		assert.are.equal(2, #T.ActiveMasks)
-		local m1, m2 = T.ActiveMasks[1], T.ActiveMasks[2]
+		assert.are.equal(2, #T.ActiveMasks())
+		local m1, m2 = T.ActiveMasks()[1], T.ActiveMasks()[2]
 		assert.are.equal(111, m1.src); assert.are.equal("CLAMP", m1.wrap)
 		assert.are.equal(112, m2.src)
 		-- first tile is a full 256; the second is 44 px wide in a 64 px file,
@@ -220,7 +227,7 @@ describe("HDMapLite", function()
 		assert.are.same({ 100, -50 }, { m1.point[4], m1.point[5] })
 		assert.are.same({ 356, -50 }, { m2.point[4], m2.point[5] })
 		local ocean, tiles = 0, 0
-		for _, tex in ipairs(T.Active) do
+		for _, tex in ipairs(T.Active()) do
 			assert(tex.masks and #tex.masks == 1, "every piece masked")
 			local m = tex.masks[1]
 			local mx1 = m == m1 and 356 or 400
@@ -235,78 +242,140 @@ describe("HDMapLite", function()
 	it("shows a neighbour's explored ground at the zone's edge", function()
 		-- Westfall overlay near its east edge: x 900 of 1002 lands at
 		-- Elwynn x = (-0.8 + 900/1002) * 1002 = 98.4
-		_G.__explored = { [1436] = { Overlay(900, 0, 102, 256, { 4242 }) } }
+		explore({ [1436] = { Overlay(900, 0, 102, 256, { 4242 }) } })
 		open(STORMWIND); open(ELWYNN)
-		assert.are.equal(1, #T.ActiveMasks)
-		local m = T.ActiveMasks[1]
+		assert.are.equal(1, #T.ActiveMasks())
+		local m = T.ActiveMasks()[1]
 		assert.are.equal(4242, m.src)
 		assert(math.abs(m.point[4] - 98.4) < 1e-6, "x " .. m.point[4])
 		-- y: Westfall's top sits at 0.2 of Elwynn's height
 		assert(math.abs(m.point[5] + 0.2 * 668) < 1e-6, "y " .. m.point[5])
-		for _, tex in ipairs(T.Active) do assert(tex.masks and tex.masks[1] == m, "masked") end
+		for _, tex in ipairs(T.Active()) do assert(tex.masks and tex.masks[1] == m, "masked") end
 	end)
 
 	it("redraws once more after masks have had time to load", function()
-		_G.__explored = { [ELWYNN] = { Overlay(0, 0, 256, 256, { 7 }) } }
+		explore({ [ELWYNN] = { Overlay(0, 0, 256, 256, { 7 }) } })
 		open(STORMWIND)
 		WorldMapFrame.mapID = ELWYNN
-		FireCallback("WorldMapOnShow") -- a fresh open resets the settle
 		C_Timer.ranDelays = {}
-		FlushTimers() -- draws, queues the settle redraw
+		FireCallback("WorldMapOnShow") -- a fresh open resets the settle; draws at once
+		FlushTimers()
 		assert.are.equal(1, #C_Timer.ranDelays)
 		assert.are.equal(0.2, C_Timer.ranDelays[1])
-		local before = T.Active[1]
-		FlushTimers() -- settle: queues a fresh draw of the same map
+		local before = T.Active()
+		_G.__loads = 0
+		FlushTimers() -- settle: queues a redraw of the same map
 		FlushTimers() -- ...which runs
-		assert(before and T.Active[1], "drawn both times")
+		assert.are.same(before, T.Active(), "same textures, same order")
+		assert.are.equal(0, _G.__loads, "nothing reloads")
 		assert.are.equal(1, #C_Timer.ranDelays, "only once per open")
 		C_Timer.ranDelays = nil
 	end)
 
 	it("redraws a fogged zone when exploration updates", function()
-		_G.__explored = { [ELWYNN] = { Overlay(0, 0, 256, 256, { 5 }) } }
+		explore({ [ELWYNN] = { Overlay(0, 0, 256, 256, { 5 }) } })
 		Loader.scripts.OnEvent(Loader, "MAP_EXPLORATION_UPDATED")
 		FlushTimers()
-		assert.are.equal(1, #T.ActiveMasks)
-		assert.are.equal(5, T.ActiveMasks[1].src)
+		assert.are.equal(1, #T.ActiveMasks())
+		assert.are.equal(5, T.ActiveMasks()[1].src)
 	end)
 
-	it("releases masks cleanly when leaving a fogged zone", function()
-		local pieces = {}
-		for i, tex in ipairs(T.Active) do pieces[i] = tex end
+	it("keeps a left fogged zone loaded but hidden, with its masks", function()
+		local pieces = T.Active()
+		local elwynnFrame = pieces[1]:GetParent()
 		open(STORMWIND)
-		assert.are.equal(0, #T.ActiveMasks)
+		assert.are.equal(0, #T.ActiveMasks())
+		assert.is_false(elwynnFrame:IsShown())
 		for _, tex in ipairs(pieces) do
+			assert.are.equal(1, #tex.masks, "still masked")
+			assert(tex.src or tex.color, "still holds its file")
+		end
+		for _, tex in ipairs(T.Active()) do
 			assert.are.equal(0, #(tex.masks or {}))
-			assert.is_nil(T.MaskOf[tex])
 		end
 		assert.is_true(T.Backdrop():IsShown())
 	end)
 
+	it("draws a map change in the same frame, without waiting a frame", function()
+		explore({ [1411] = { Overlay(0, 0, 256, 256, { 3 }) } })
+		open(STORMWIND)
+		WorldMapFrame.mapID = 1414
+		FireCallback("MapCanvas.MapSet", 1414)
+		assert(T.ActiveCount() > 0, "Durotar drawn before any timer runs")
+		assert.is_true(T.Overlay():IsShown())
+		FlushTimers()
+		explore({}); open(STORMWIND)
+	end)
+
+	it("waits for the canvas resize when the new map's art is another size", function()
+		WorldMapFrame.mapID = 1414
+		canvas:SetSize(500, 300) -- not yet the 1002 x 668 art layer
+		FireCallback("MapCanvas.MapSet", 1414)
+		assert.are.equal(STORMWIND, T.Layers()[#T.Layers()].mapID, "not drawn yet")
+		canvas:SetSize(1002, 668)
+		FlushTimers()
+		assert.are.equal(1414, T.Layers()[#T.Layers()].mapID, "drawn after the resize")
+		open(STORMWIND)
+	end)
+
+	it("switches back to a recent map without reloading anything", function()
+		explore({ [ELWYNN] = { Overlay(0, 0, 256, 256, { 9 }) } })
+		open(ELWYNN)
+		local elwynn = T.Active()
+		open(STORMWIND)
+		_G.__loads = 0
+		open(ELWYNN)
+		assert.are.same(elwynn, T.Active(), "same textures")
+		assert.is_true(elwynn[1]:GetParent():IsShown())
+		assert.are.equal(0, _G.__loads)
+	end)
+
+	it("redraws in place when exploration grows: only new ground loads", function()
+		local before = T.Active()
+		_G.__loads = 0
+		explore({ [ELWYNN] = { Overlay(0, 0, 256, 256, { 9 }), Overlay(300, 300, 64, 64, { 10 }) } })
+		FlushTimers()
+		local after = T.Active()
+		for i, tex in ipairs(before) do assert.are.equal(tex, after[i], "reused in order") end
+		assert(#after > #before, "new ground drawn")
+		assert(_G.__loads > 0 and _G.__loads <= #after - #before + 1, "only the new pieces load: " .. _G.__loads)
+	end)
+
+	it("keeps at most three maps and drops the oldest one's files", function()
+		open(ELWYNN)
+		open(STORMWIND); open(1414); open(1415)
+		assert.are.equal(3, #T.Layers())
+		for _, L in ipairs(T.Layers()) do
+			assert(L.mapID ~= ELWYNN, "Elwynn evicted")
+			for _, tex in ipairs(L.tex) do assert(tex.src ~= 9, "Elwynn's file dropped") end
+		end
+		explore({}); open(STORMWIND)
+	end)
+
 	it("ignores exploration updates on unfogged maps", function()
-		local first = T.Active[1]
+		local first = T.Active()[1]
 		Loader.scripts.OnEvent(Loader, "MAP_EXPLORATION_UPDATED")
 		FlushTimers()
-		assert.are.equal(first, T.Active[1])
+		assert.are.equal(first, T.Active()[1])
 	end)
 
 	it("fogs the continent from every zone on it", function()
-		_G.__explored = {
+		explore({
 			[ELWYNN] = { Overlay(0, 0, 256, 256, { 1 }) },
 			[1436] = { Overlay(0, 0, 256, 256, { 2 }) },
 			[1411] = { Overlay(0, 0, 256, 256, { 3 }) }, -- Kalimdor: not here
-		}
+		})
 		open(1415)
 		assert.is_false(T.Backdrop():IsShown())
 		local srcs = {}
-		for _, m in ipairs(T.ActiveMasks) do srcs[m.src] = m end
+		for _, m in ipairs(T.ActiveMasks()) do srcs[m.src] = m end
 		assert(srcs[1] and srcs[2], "both Eastern Kingdoms zones")
 		assert.is_nil(srcs[3])
 		-- Elwynn at 0.40, 0.60 of the continent; its 256 px overlay is 0.1 of 256 px
 		assert(math.abs(srcs[1].point[4] - 0.4 * 1002) < 1e-6 and math.abs(srcs[1].point[5] + 0.6 * 668) < 1e-6, "placed")
 		assert(math.abs(srcs[1].w - 25.6) < 1e-6, "scaled")
 		local tiles = 0
-		for _, tex in ipairs(T.Active) do
+		for _, tex in ipairs(T.Active()) do
 			assert(tex.masks and #tex.masks == 1, "masked")
 			if type(tex.src) == "string" then
 				tiles = tiles + 1
@@ -319,7 +388,7 @@ describe("HDMapLite", function()
 	it("fogs the world map through the parent chain", function()
 		open(947)
 		local srcs = {}
-		for _, m in ipairs(T.ActiveMasks) do srcs[m.src] = m end
+		for _, m in ipairs(T.ActiveMasks()) do srcs[m.src] = m end
 		assert(srcs[1] and srcs[2] and srcs[3], "zones on both continents")
 		-- Elwynn: 0.5 + 0.40 * 0.5 = 0.70 across; Durotar: 0.60 * 0.5 = 0.30
 		assert(math.abs(srcs[1].point[4] - 0.70 * 1002) < 1e-6, "x " .. srcs[1].point[4])
@@ -328,7 +397,7 @@ describe("HDMapLite", function()
 	end)
 
 	it("shows only the stock continent when nothing is explored", function()
-		_G.__explored = {}
+		explore({})
 		open(1414)
 		assert.are.equal(0, T.ActiveCount())
 		assert.is_true(T.Overlay():IsShown())
@@ -337,6 +406,7 @@ describe("HDMapLite", function()
 	it("falls back to unfogged art when the exploration API is missing", function()
 		local saved = C_MapExplorationInfo.GetExploredMapTextures
 		C_MapExplorationInfo.GetExploredMapTextures = nil
+		T.ResetHD() -- cached fogged layers are stale
 		open(ELWYNN)
 		assert(T.ActiveCount() > 0, "whole zone")
 		assert.is_true(T.Backdrop():IsShown())
@@ -347,11 +417,11 @@ describe("HDMapLite", function()
 
 	it("falls back to the stock map when fogged HD art can't be loaded", function()
 		T.ResetHD(); _G.__missingArt = true
-		_G.__explored = { [ELWYNN] = { Overlay(0, 0, 256, 256, { 1 }) } }
+		explore({ [ELWYNN] = { Overlay(0, 0, 256, 256, { 1 }) } })
 		open(1415)
 		assert.are.equal(0, T.ActiveCount())
 		assert.is_false(T.Overlay():IsShown())
-		_G.__missingArt = nil; T.ResetHD(); _G.__explored = {}
+		_G.__missingArt = nil; T.ResetHD(); explore({})
 	end)
 
 	-- The tests from here on use full continent grids, so fog is off.
@@ -361,7 +431,7 @@ describe("HDMapLite", function()
 		open(1414)
 		assert.are.equal(32 * 22, T.ActiveCount())
 		assert.is_true(T.Backdrop():IsShown())
-		local last = T.Active[#T.Active]
+		local last = T.Active()[#T.Active()]
 		assert(last.src:find("KalimdorHD\\kalimdorhd704", 1, true), last.src)
 		-- bottom row is clipped: 5461 - 21*256 = 85 px of 256
 		assert(math.abs(last.tc[4] - 85 / 256) < 1e-9, "clipped texcoord")
