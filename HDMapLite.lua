@@ -75,8 +75,12 @@ local OCEAN = {} -- sentinel source: an ocean-coloured piece instead of a file
 --   * each recently drawn map keeps its own layer (a child frame of the
 --     overlay) with its textures still holding their files, so switching back
 --     to it is just a Show;
---   * redrawing a map reuses its layer's textures in the same order, so each
---     one is handed the file it already has and nothing reloads.
+--   * redrawing a map hands each piece a texture that already holds that
+--     piece's file (matched by file, not by drawing order, so newly explored
+--     ground in the middle of a continent doesn't shift every tile after it),
+--     so only genuinely new art loads;
+--   * a map marked stale by an exploration update is only redrawn if what it
+--     shows actually changed.
 -- Only the least recently used layer gives its files up.
 local MAX_LAYERS = 3 -- e.g. a zone, its continent and the world
 
@@ -89,6 +93,11 @@ local settledMapID -- map whose masks have had their settle redraw
 local pending, settlePending = false, false
 
 -- Layers --------------------------------------------------------------------
+--
+-- A layer's textures (and masks) are in one of three places:
+--   used:  drawn by the current draw (in drawing order), keyOf[x] = its file;
+--   prev:  drawn by the previous draw and not yet claimed by this one, by file;
+--   spare: holding nothing, free for any file.
 
 local function NewLayer()
 	local frame = CreateFrame("Frame", nil, overlay)
@@ -97,67 +106,104 @@ local function NewLayer()
 	local backdrop = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
 	backdrop:SetAllPoints(frame)
 	backdrop:SetColorTexture(OCEAN_R, OCEAN_G, OCEAN_B, 1)
-	return { frame = frame, backdrop = backdrop, tex = {}, n = 0, masks = {}, nm = 0, maskOf = {} }
+	return {
+		frame = frame, backdrop = backdrop, maskOf = {},
+		used = {}, prev = {}, spare = {}, keyOf = {},
+		usedMasks = {}, prevMasks = {}, spareMasks = {}, maskKeyOf = {},
+	}
 end
 
--- The next texture of the layer being drawn, in drawing order.
-local function Acquire(drawLayer)
-	local L = current
-	local i = L.n + 1
-	L.n = i
-	local tex = L.tex[i]
-	if not tex then
-		tex = L.frame:CreateTexture(nil, "ARTWORK")
-		L.tex[i] = tex
+-- Take an object holding *key* from *prev*, else a spare, else nil.
+local function Claim(prev, spare, key)
+	local list = prev[key]
+	local obj = list and list[#list]
+	if obj then
+		list[#list] = nil
+		return obj
 	end
+	obj = spare[#spare]
+	if obj then
+		spare[#spare] = nil
+	end
+	return obj
+end
+
+-- A texture for a piece showing *key* (a file, or the OCEAN sentinel).
+local function Acquire(drawLayer, key)
+	local L = current
+	local tex = Claim(L.prev, L.spare, key) or L.frame:CreateTexture(nil, "ARTWORK")
 	local mask = L.maskOf[tex]
 	if mask then
-		-- Re-added below if still wanted; re-adding also makes the client
-		-- re-read a mask whose file has loaded since (see Settle).
+		-- Re-added by the caller if still wanted; re-adding also makes the
+		-- client re-read a mask whose file has loaded since (see Settle).
 		tex:RemoveMaskTexture(mask)
 		L.maskOf[tex] = nil
 	end
+	L.keyOf[tex] = key
+	L.used[#L.used + 1] = tex
 	tex:ClearAllPoints()
 	tex:SetDrawLayer(drawLayer)
 	tex:Show()
 	return tex
 end
 
-local function AcquireMask()
+local function AcquireMask(fid)
 	local L = current
-	local i = L.nm + 1
-	L.nm = i
-	local mask = L.masks[i]
-	if not mask then
-		mask = L.frame:CreateMaskTexture()
-		L.masks[i] = mask
-	end
+	local mask = Claim(L.prevMasks, L.spareMasks, fid) or L.frame:CreateMaskTexture()
+	L.maskKeyOf[mask] = fid
+	L.usedMasks[#L.usedMasks + 1] = mask
 	mask:ClearAllPoints()
 	return mask
 end
 
-local function BeginLayer(L)
-	L.n, L.nm = 0, 0
+-- Move last draw's objects into *prev*, by file.
+local function Stash(used, prev, keyOf)
+	for i = 1, #used do
+		local obj = used[i]
+		local key = keyOf[obj]
+		local list = prev[key]
+		if not list then
+			list = {}
+			prev[key] = list
+		end
+		list[#list + 1] = obj
+		used[i] = nil
+	end
 end
 
--- Retire the textures this draw didn't use. They drop their files: a redraw of
--- the same map only grows (more explored), so leftovers are art we no longer
--- show. Masks keep theirs: they are small, and a mask that has to reload draws
--- opaque until it does.
+local function BeginLayer(L)
+	Stash(L.used, L.prev, L.keyOf)
+	Stash(L.usedMasks, L.prevMasks, L.maskKeyOf)
+end
+
+-- Retire what this draw didn't claim. Textures drop their files: art we no
+-- longer show. Masks keep theirs: they are small, and a mask that has to
+-- reload draws opaque until it does.
 local function FinishLayer(L)
-	for i = L.n + 1, #L.tex do
-		local tex = L.tex[i]
-		local mask = L.maskOf[tex]
-		if mask then
-			tex:RemoveMaskTexture(mask)
-			L.maskOf[tex] = nil
+	for key, list in pairs(L.prev) do
+		for i = #list, 1, -1 do
+			local tex = list[i]
+			local mask = L.maskOf[tex]
+			if mask then
+				tex:RemoveMaskTexture(mask)
+				L.maskOf[tex] = nil
+			end
+			tex:Hide()
+			tex:ClearAllPoints()
+			tex:SetTexture(nil)
+			L.keyOf[tex] = nil
+			L.spare[#L.spare + 1] = tex
+			list[i] = nil
 		end
-		tex:Hide()
-		tex:ClearAllPoints()
-		tex:SetTexture(nil)
+		L.prev[key] = nil
 	end
-	for i = L.nm + 1, #L.masks do
-		L.masks[i]:ClearAllPoints()
+	for key, list in pairs(L.prevMasks) do
+		for i = #list, 1, -1 do
+			list[i]:ClearAllPoints()
+			L.spareMasks[#L.spareMasks + 1] = list[i]
+			list[i] = nil
+		end
+		L.prevMasks[key] = nil
 	end
 end
 
@@ -204,7 +250,7 @@ local function Piece(src, x0, y0, tw, th, cx0, cy0, cx1, cy1, mask)
 	if ix1 <= ix0 or iy1 <= iy0 then
 		return true
 	end
-	local tex = Acquire(src == OCEAN and "BACKGROUND" or "ARTWORK")
+	local tex = Acquire(src == OCEAN and "BACKGROUND" or "ARTWORK", src)
 	tex:SetPoint("TOPLEFT", current.frame, "TOPLEFT", ix0, -iy0)
 	tex:SetSize(ix1 - ix0, iy1 - iy0)
 	if mask then
@@ -441,7 +487,7 @@ local function Reveal(zoneID, rect, w, h, paint, art)
 						-- The mask covers the whole power-of-two file rather
 						-- than relying on texcoords to crop a MaskTexture;
 						-- pieces are clipped to the visible part anyway.
-						local mask = AcquireMask()
+						local mask = AcquireMask(fid)
 						mask:SetPoint("TOPLEFT", current.frame, "TOPLEFT", x0, -y0)
 						mask:SetSize(fw * kx, fh * ky)
 						-- CLAMP, not CLAMPTOBLACKADDITIVE: it keeps adjoining
@@ -549,6 +595,29 @@ local function Settle()
 	Schedule()
 end
 
+-- What exploration shows on *mapID*, as a string: equal strings, same reveal.
+-- Cheap next to a redraw (one API call per zone on the map, no textures).
+local function ExploredSignature(mapID)
+	if not (FOG[mapID] or HD_MAPS[mapID]) or not ExplorationAvailable() then
+		return ""
+	end
+	local parts = {}
+	for _, c in ipairs(Candidates(mapID)) do
+		local ok, explored = pcall(C_MapExplorationInfo.GetExploredMapTextures, c[1])
+		if ok and type(explored) == "table" then
+			parts[#parts + 1] = c[1]
+			for _, info in ipairs(explored) do
+				if not info.isShownByMouseOver then
+					local ids = type(info.fileDataIDs) == "table" and info.fileDataIDs or {}
+					parts[#parts + 1] = (info.offsetX or 0) .. "," .. (info.offsetY or 0) .. ","
+						.. (info.textureWidth or 0) .. "," .. (info.textureHeight or 0) .. "," .. (ids[1] or 0)
+				end
+			end
+		end
+	end
+	return table.concat(parts, ";")
+end
+
 local function HideLayersBut(keep)
 	for _, L in ipairs(layers) do
 		if L ~= keep then
@@ -588,15 +657,25 @@ local function Draw()
 		overlay:Hide()
 		return
 	end
-	if current and current.mapID == mapID and current.w == w and current.h == h and not current.dirty then
+	if current and current.mapID == mapID and current.w == w and current.h == h
+		and not current.dirty and not current.stale then
 		return
 	end
 
 	local L = LayerFor(mapID)
 	current = L
 	HideLayersBut(L)
-	if L.dirty or L.w ~= w or L.h ~= h then
-		L.w, L.h, L.dirty = w, h, false
+	local rebuild = L.dirty or L.w ~= w or L.h ~= h
+	local sig = L.sig
+	if rebuild or L.stale then
+		-- Exploration updates arrive for every zone you walk through; most
+		-- change nothing on this map, and a redraw of a continent isn't free.
+		sig = ExploredSignature(mapID)
+		rebuild = rebuild or sig ~= L.sig
+		L.stale = false
+	end
+	if rebuild then
+		L.w, L.h, L.dirty, L.sig = w, h, false, sig
 		BeginLayer(L)
 		hdFailed = false
 		local drawn
@@ -615,7 +694,7 @@ local function Draw()
 	L.frame:SetShown(L.drawn)
 	overlay:SetShown(L.drawn)
 
-	if L.drawn and L.nm > 0 and settledMapID ~= mapID and not settlePending then
+	if L.drawn and #L.usedMasks > 0 and settledMapID ~= mapID and not settlePending then
 		settledMapID = mapID
 		settlePending = true
 		C_Timer.After(MASK_SETTLE_DELAY, Settle)
@@ -705,13 +784,14 @@ local function Init()
 	C_Timer.After(NOTICE_DELAY, NoticeIfArtMissing)
 end
 
--- New ground explored: every cached fogged map is stale. Redraw the open one
--- (in place, so only the new ground appears); the rest redraw when next shown.
+-- New ground explored: every cached fogged map may be stale. Check the open
+-- one now (redrawn in place, so only new ground appears); the rest when next
+-- shown.
 local function OnExplorationUpdated()
 	local any = false
 	for _, L in ipairs(layers) do
 		if FOG[L.mapID] or HD_MAPS[L.mapID] then
-			L.dirty = true
+			L.stale = true
 			any = any or L == current
 		end
 	end
@@ -744,15 +824,15 @@ ns._test = {
 	-- The current layer's textures and masks in use, in drawing order.
 	Active = function()
 		local t = {}
-		for i = 1, current and current.n or 0 do
-			t[i] = current.tex[i]
+		for i, tex in ipairs(current and current.used or {}) do
+			t[i] = tex
 		end
 		return t
 	end,
 	ActiveMasks = function()
 		local t = {}
-		for i = 1, current and current.nm or 0 do
-			t[i] = current.masks[i]
+		for i, mask in ipairs(current and current.usedMasks or {}) do
+			t[i] = mask
 		end
 		return t
 	end,
@@ -760,7 +840,7 @@ ns._test = {
 		return current and current.maskOf[tex]
 	end,
 	ActiveCount = function()
-		return current and current.n or 0
+		return current and #current.used or 0
 	end,
 	Layers = function()
 		return layers

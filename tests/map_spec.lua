@@ -341,13 +341,50 @@ describe("HDMapLite", function()
 		assert(_G.__loads > 0 and _G.__loads <= #after - #before + 1, "only the new pieces load: " .. _G.__loads)
 	end)
 
+	it("keeps every loaded tile when new ground appears earlier in the draw", function()
+		-- Continent: Westfall (1436) explored, then Elwynn (1429) gets explored.
+		-- Elwynn sorts first, so its pieces are drawn before Westfall's.
+		explore({ [1436] = { Overlay(0, 0, 256, 256, { 21 }) } })
+		open(1415)
+		local before = {}
+		for _, tex in ipairs(T.Active()) do before[tex] = tex.src or "ocean" end
+		_G.__loads = 0
+		explore({ [1429] = { Overlay(0, 0, 256, 256, { 22 }) }, [1436] = { Overlay(0, 0, 256, 256, { 21 }) } })
+		FlushTimers()
+		local kept, new = 0, 0
+		for _, tex in ipairs(T.Active()) do
+			if before[tex] then
+				kept = kept + 1
+				assert.are.equal(before[tex], tex.src or "ocean", "a kept texture keeps its file")
+			else
+				new = new + 1
+			end
+		end
+		assert.are.equal(#T.Active(), kept + new)
+		assert(kept > 0 and new > 0)
+		assert(_G.__loads <= new + 1, "only Elwynn's pieces load: " .. _G.__loads .. " vs " .. new)
+	end)
+
+	it("doesn't redraw a cached map when exploration changed nothing on it", function()
+		local before = T.Active()
+		local tex = before[1]
+		tex.src = "sentinel" -- would be overwritten by any redraw
+		explore(_G.__explored) -- an update, but the same data
+		FlushTimers()
+		assert.are.equal("sentinel", tex.src)
+		assert.are.same(before, T.Active())
+		explore({}); FlushTimers()
+		assert.are.equal(0, T.ActiveCount(), "a real change still redraws")
+	end)
+
 	it("keeps at most three maps and drops the oldest one's files", function()
 		open(ELWYNN)
 		open(STORMWIND); open(1414); open(1415)
 		assert.are.equal(3, #T.Layers())
 		for _, L in ipairs(T.Layers()) do
 			assert(L.mapID ~= ELWYNN, "Elwynn evicted")
-			for _, tex in ipairs(L.tex) do assert(tex.src ~= 9, "Elwynn's file dropped") end
+			for _, tex in ipairs(L.used) do assert(tex.src ~= 9, "Elwynn's file dropped") end
+			for _, tex in ipairs(L.spare) do assert.is_nil(tex.src) end
 		end
 		explore({}); open(STORMWIND)
 	end)
