@@ -38,7 +38,13 @@ function W:SetTextColor(...) self.textColor = { ... } end
 function W:SetShadowOffset(...) self.shadow = { ... } end
 function W.SetShadowColor() end
 function W:SetVertexColor(...) self.vertex = { ... } end
-function W:GetEffectiveScale() return self.scale or 1 end
+-- effective scale: a test sets .scale on a canvas-scaled frame; a frame that
+-- was SetScale'd multiplies its parent's
+function W:GetEffectiveScale()
+	if self.ownScale then return self.ownScale * (self.parent and self.parent:GetEffectiveScale() or 1) end
+	return self.scale or 1
+end
+function W:SetScale(s) self.ownScale = s end
 function W:Show() self.shown = true end
 function W:Hide() self.shown = false end
 function W:SetShown(v) self.shown = v and true or false end
@@ -429,7 +435,9 @@ describe("HDMapLite", function()
 		assert.are.equal("Goldshire", fs.text)
 		assert.are.equal("OVERLAY", fs.layer)
 		assert.are.equal("OUTLINE", fs.flags)
-		assert(math.abs(fs.point[4] - 0.424 * 1002) < 1e-6 and math.abs(fs.point[5] + 0.666 * 668) < 1e-6, "placed")
+		local anchor = fs.point[2]
+		assert.are.equal("CENTER", fs.point[1])
+		assert(math.abs(anchor.point[4] - 0.424 * 1002) < 1e-6 and math.abs(anchor.point[5] + 0.666 * 668) < 1e-6, "placed")
 		assert(math.abs(fs.size - 12 * 0.85) < 1e-6, "sized")
 		assert.is_true(fs.shown)
 	end)
@@ -462,18 +470,29 @@ describe("HDMapLite", function()
 		for i, t in ipairs(halo) do
 			assert.is_true(t.shown)
 			assert.are.same({ 0, 0, 0 }, { t.vertex[1], t.vertex[2], t.vertex[3] })
-			assert.are.same({ 501, -167 }, { t.point[4], t.point[5] })
+			local anchor = t.point[2]
+			assert.are.same({ 501, -167 }, { anchor.point[4], anchor.point[5] })
 			if i > 1 then assert(t.w < halo[i - 1].w, "rings shrink") end
 		end
 		assert.are.equal(46, halo[1].w)
-		-- screen-sized: a canvas drawn at twice the scale gets half the units
-		local frame = halo[1]:GetParent()
-		frame.scale = 2
 		_G.__playerPos[STORMWIND] = { 0.5, 0.5 }
 		T.UpdateHalo()
-		assert.are.equal(23, halo[1].w)
-		assert.are.same({ 501, -334 }, { halo[1].point[4], halo[1].point[5] })
-		frame.scale = nil
+		assert.are.same({ 501, -334 }, { halo[1].point[2].point[4], halo[1].point[2].point[5] })
+	end)
+
+	it("keeps labels and the halo the same size on screen through a zoom", function()
+		local screen = T.Halo()[1]:GetParent()
+		local canvasLayer = screen:GetParent()
+		for _, scale in ipairs({ 1, 1.37, 2, 3.5 }) do
+			canvasLayer.scale = scale -- the canvas zooms
+			T.ApplyScreenScale()
+			assert(math.abs(screen:GetEffectiveScale() - UIParent:GetEffectiveScale()) < 1e-9, "screen-sized at " .. scale)
+		end
+		local set = screen.ownScale
+		T.ApplyScreenScale()
+		assert.are.equal(set, screen.ownScale, "no SetScale when nothing changed")
+		canvasLayer.scale = nil
+		T.ApplyScreenScale()
 	end)
 
 	it("hides the halo off the map, on secret positions and on maps it leaves alone", function()

@@ -19,6 +19,8 @@ High-resolution world map art for WoW: Forever, with nothing else.
   Stormwind, Orgrimmar, Thunder Bluff and Darnassus, in gold with a black
   outline, since the HD art covers the names painted on the stock map.
   Under fog a name appears once its spot is explored, like the stock map's.
+  Names keep a steady size on screen while you zoom (they spread apart rather
+  than grow), which keeps the text crisp instead of shimmering.
 - **Player halo:** a soft dark disc under your arrow so it stands out on the
   busier HD art. It follows you while the map is open.
 - **Everything else** (dungeons, caves, Ironforge, Undercity, battlegrounds
@@ -97,7 +99,8 @@ Turn on BugSack/BugGrabber, and `/console taintLog 1` (the log goes to
    should behave as before.
 13. **Area names:** in Elwynn Forest, Durotar and Stormwind, names should sit on their
    places and only appear on explored ground. Check they're readable at
-   default zoom and zoomed in. If they're too big or small, tell me.
+   default zoom and zoomed in, and steady (no pulsing) while zooming. If
+   they're too big or small, tell me.
 14. **Player arrow:** on a zone map and a continent, the arrow should stand
    out on a dark halo. The halo should follow you smoothly and size with the
    arrow at any zoom. It should vanish inside dungeons.

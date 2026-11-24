@@ -117,8 +117,14 @@ local function NewLayer()
 	local backdrop = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
 	backdrop:SetAllPoints(frame)
 	backdrop:SetColorTexture(OCEAN_R, OCEAN_G, OCEAN_B, 1)
+	-- Labels and the halo: kept at a fixed size on screen (see ApplyScreenScale),
+	-- each pinned to an invisible anchor on *frame* so it still follows the map.
+	local screen = CreateFrame("Frame", nil, frame)
+	screen:SetAllPoints(frame)
+	screen:EnableMouse(false)
 	return {
 		frame = frame, backdrop = backdrop, maskOf = {}, labels = {},
+		screen = screen, anchors = {},
 		used = {}, prev = {}, spare = {}, keyOf = {},
 		usedMasks = {}, prevMasks = {}, spareMasks = {}, maskKeyOf = {},
 	}
@@ -632,7 +638,8 @@ end
 -- Area labels ---------------------------------------------------------------
 
 local LABEL_FONT = "Fonts\\FRIZQT__.TTF"
--- Font size per unit of the data's h. Approximate; tune in game.
+-- Font size, in UI units on screen, per unit of the data's h. Approximate;
+-- tune in game.
 local LABEL_FONT_PER_H = 0.85
 local LABEL_COLOR = {
 	c = { 1, 0.82, 0 }, -- capital: game gold
@@ -655,6 +662,33 @@ local function LabelExplored(mapID, u, v)
 	return ok and ids ~= nil
 end
 
+-- Labels hold a fixed size on screen instead of growing with the zoom: text
+-- re-rendered at a new size every frame of a zoom shimmers ("pulses"), however
+-- smoothly the size changes. Each layer's *screen* frame is scaled to cancel
+-- the canvas's zoom, so its contents never change size on screen; the
+-- anchors they hang from live on the canvas-scaled frame, so they still track
+-- their spot. Only this one SetScale runs per frame while zooming.
+local function ApplyScreenScale(L)
+	local k = 1
+	local cs = L.frame.GetEffectiveScale and L.frame:GetEffectiveScale()
+	local us = UIParent and UIParent.GetEffectiveScale and UIParent:GetEffectiveScale()
+	if type(cs) == "number" and type(us) == "number" and cs > 0 and us > 0 then
+		k = us / cs
+	end
+	if L.k ~= k then
+		L.k = k
+		L.screen:SetScale(k)
+	end
+end
+
+-- An invisible point on the canvas-scaled frame, for screen-sized things to
+-- hang from.
+local function NewAnchor(L)
+	local a = L.frame:CreateTexture(nil, "BACKGROUND")
+	a:SetSize(1, 1)
+	return a
+end
+
 -- Draw *mapID*'s labels on layer *L* (nil mapID: none). Font strings load no
 -- files, so they are simply reused in order.
 local function DrawLabels(L, mapID, w, h)
@@ -664,18 +698,22 @@ local function DrawLabels(L, mapID, w, h)
 		if LabelExplored(mapID, u, v) then
 			n = n + 1
 			local fs = L.labels[n]
+			local anchor = L.anchors[n]
 			if not fs then
-				fs = L.frame:CreateFontString(nil, "OVERLAY")
+				anchor = NewAnchor(L)
+				L.anchors[n] = anchor
+				fs = L.screen:CreateFontString(nil, "OVERLAY")
 				fs:SetShadowOffset(1, -1)
 				fs:SetShadowColor(0, 0, 0, 1)
+				fs:SetPoint("CENTER", anchor, "CENTER")
 				L.labels[n] = fs
 			end
 			local color = LABEL_COLOR[kind] or LABEL_COLOR.s
 			fs:SetFont(LABEL_FONT, size * LABEL_FONT_PER_H, "OUTLINE")
 			fs:SetTextColor(color[1], color[2], color[3], 1)
 			fs:SetText(name)
-			fs:ClearAllPoints()
-			fs:SetPoint("CENTER", L.frame, "TOPLEFT", u * w, -v * h)
+			anchor:ClearAllPoints()
+			anchor:SetPoint("CENTER", L.frame, "TOPLEFT", u * w, -v * h)
 			fs:Show()
 		end
 	end
@@ -687,15 +725,16 @@ end
 
 -- Player halo ---------------------------------------------------------------
 --
--- Rings of a soft dark disc, largest first, in screen pixels (the arrow is a
--- fixed screen size too, whatever the zoom). Drawn on the open map's layer
--- under its labels; Blizzard's arrow pin sits far above.
+-- Rings of a soft dark disc, largest first, in UI units on screen (the arrow
+-- is a fixed screen size too, whatever the zoom). Drawn on the open map's
+-- screen frame under its labels; Blizzard's arrow pin sits far above.
 local HALO = { { 46, 0.22 }, { 34, 0.22 }, { 24, 0.25 } }
 local HALO_FILE = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local HALO_INTERVAL = 0.05 -- seconds between position updates
 local haloTex = {}
+local haloAnchor
 local haloDriver
-local haloX, haloY, haloLayer, haloK
+local haloX, haloY, haloLayer
 
 local function HideHalo()
 	for _, t in ipairs(haloTex) do
@@ -734,32 +773,31 @@ local function UpdateHalo()
 		end
 		return
 	end
-	-- Screen pixels to canvas units.
-	local k = 1
-	local cs = L.frame.GetEffectiveScale and L.frame:GetEffectiveScale()
-	local us = UIParent and UIParent.GetEffectiveScale and UIParent:GetEffectiveScale()
-	if type(cs) == "number" and type(us) == "number" and cs > 0 then
-		k = us / cs
-	end
-	if haloLayer == L and x == haloX and y == haloY and k == haloK then
+	if haloLayer == L and x == haloX and y == haloY then
 		return
 	end
-	haloX, haloY, haloK = x, y, k
+	if not haloAnchor then
+		haloAnchor = NewAnchor(L)
+	end
+	if haloLayer ~= L then
+		haloAnchor:SetParent(L.frame)
+	end
+	haloX, haloY = x, y
+	haloAnchor:ClearAllPoints()
+	haloAnchor:SetPoint("CENTER", L.frame, "TOPLEFT", x * L.w, -y * L.h)
 	for i, ring in ipairs(HALO) do
 		local t = haloTex[i]
 		if not t then
-			t = L.frame:CreateTexture(nil, "ARTWORK", nil, 7)
+			t = L.screen:CreateTexture(nil, "ARTWORK", nil, 7)
 			t:SetTexture(HALO_FILE)
 			t:SetVertexColor(0, 0, 0, ring[2])
+			t:SetSize(ring[1], ring[1])
+			t:SetPoint("CENTER", haloAnchor, "CENTER")
 			haloTex[i] = t
-		end
-		if haloLayer ~= L then
-			t:SetParent(L.frame)
+		elseif haloLayer ~= L then
+			t:SetParent(L.screen)
 			t:SetDrawLayer("ARTWORK", 7)
 		end
-		t:ClearAllPoints()
-		t:SetPoint("CENTER", L.frame, "TOPLEFT", x * L.w, -y * L.h)
-		t:SetSize(ring[1] * k, ring[1] * k)
 		t:Show()
 	end
 	haloLayer = L
@@ -842,6 +880,7 @@ local function Draw()
 	end
 	L.frame:SetShown(L.drawn)
 	overlay:SetShown(L.drawn)
+	ApplyScreenScale(L)
 	UpdateHalo()
 
 	if L.drawn and #L.usedMasks > 0 and settledMapID ~= mapID and not settlePending then
@@ -922,11 +961,16 @@ local function Init()
 	-- Our own frame tracks the canvas size, so no hook on Blizzard's.
 	overlay:SetScript("OnSizeChanged", Schedule)
 
-	-- Moves the halo. A child of the overlay, so it only ticks while the map
-	-- is open on a map we draw.
+	-- Keeps labels and the halo screen-sized through zooms (every frame: a
+	-- compare, and one SetScale while the zoom changes) and moves the halo. A
+	-- child of the overlay, so it only ticks while the map is open on a map we
+	-- draw.
 	haloDriver = CreateFrame("Frame", nil, overlay)
 	local elapsedSince = 0
 	haloDriver:SetScript("OnUpdate", function(_, elapsed)
+		if current then
+			ApplyScreenScale(current)
+		end
 		elapsedSince = elapsedSince + elapsed
 		if elapsedSince >= HALO_INTERVAL then
 			elapsedSince = 0
@@ -1026,6 +1070,11 @@ ns._test = {
 	end,
 	Candidates = Candidates,
 	UpdateHalo = UpdateHalo,
+	ApplyScreenScale = function()
+		if current then
+			ApplyScreenScale(current)
+		end
+	end,
 	Halo = function()
 		return haloTex
 	end,
