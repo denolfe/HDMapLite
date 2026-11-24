@@ -31,6 +31,14 @@ function W:RemoveMaskTexture(m)
 	for i, x in ipairs(self.masks or {}) do if x == m then table.remove(self.masks, i) return end end
 	error("removing a mask that was never added")
 end
+function W:CreateFontString(_, layer) local f = New("FontString", self); f.layer = layer; return f end
+function W:SetFont(font, size, flags) self.font, self.size, self.flags = font, size, flags end
+function W:SetText(s) self.text = s end
+function W:SetTextColor(...) self.textColor = { ... } end
+function W:SetShadowOffset(...) self.shadow = { ... } end
+function W.SetShadowColor() end
+function W:SetVertexColor(...) self.vertex = { ... } end
+function W:GetEffectiveScale() return self.scale or 1 end
 function W:Show() self.shown = true end
 function W:Hide() self.shown = false end
 function W:SetShown(v) self.shown = v and true or false end
@@ -76,7 +84,29 @@ C_Map = {
 	end,
 }
 _G.__explored = {}
-C_MapExplorationInfo = { GetExploredMapTextures = function(id) return _G.__explored[id] or {} end }
+C_MapExplorationInfo = {
+	GetExploredMapTextures = function(id) return _G.__explored[id] or {} end,
+	-- explored if an overlay of that map covers the point (layer is 1002 x 668)
+	GetExploredAreaIDsAtPosition = function(id, pos)
+		local x, y = pos.x * 1002, pos.y * 668
+		for _, o in ipairs(_G.__explored[id] or {}) do
+			if x >= o.offsetX and x <= o.offsetX + o.textureWidth and y >= o.offsetY and y <= o.offsetY + o.textureHeight then
+				return { 1 }
+			end
+		end
+		return nil
+	end,
+}
+function CreateVector2D(x, y) return { x = x, y = y } end
+UIParent = New("Frame")
+_G.__playerPos = {}
+C_Map.GetPlayerMapPosition = function(id)
+	local p = _G.__playerPos[id]
+	if not p then return nil end
+	return { GetXY = function() return p[1], p[2] end }
+end
+_G.__secret = {}
+function issecretvalue(v) return _G.__secret[v] == true end
 local function Overlay(x, y, w, h, ids, hover)
 	return { offsetX = x, offsetY = y, textureWidth = w, textureHeight = h, fileDataIDs = ids, isShownByMouseOver = hover or false }
 end
@@ -103,6 +133,7 @@ end
 local ns = {}
 _G.NS = ns
 assert(loadfile("Zones.lua"))("HDMapLite", ns)
+assert(loadfile("Labels.lua"))("HDMapLite", ns)
 local loader
 local realCreate = CreateFrame
 CreateFrame = function(...) local f = realCreate(...); loader = loader or f; return f end
@@ -387,6 +418,75 @@ describe("HDMapLite", function()
 			for _, tex in ipairs(L.spare) do assert.is_nil(tex.src) end
 		end
 		explore({}); open(STORMWIND)
+	end)
+
+	it("labels a fogged zone's explored places only", function()
+		explore({ [ELWYNN] = { Overlay(380, 400, 100, 100, { 31 }) } }) -- around Goldshire
+		open(STORMWIND); open(ELWYNN)
+		local labels = T.Labels()
+		assert.are.equal(1, #labels)
+		local fs = labels[1]
+		assert.are.equal("Goldshire", fs.text)
+		assert.are.equal("OVERLAY", fs.layer)
+		assert.are.equal("OUTLINE", fs.flags)
+		assert(math.abs(fs.point[4] - 0.424 * 1002) < 1e-6 and math.abs(fs.point[5] + 0.666 * 668) < 1e-6, "placed")
+		assert(math.abs(fs.size - 12 * 0.85) < 1e-6, "sized")
+		assert.is_true(fs.shown)
+	end)
+
+	it("adds labels as exploration grows, and hides them on continents", function()
+		explore({ [ELWYNN] = { Overlay(380, 400, 100, 100, { 31 }), Overlay(0, 0, 1002, 668, { 32 }) } })
+		FlushTimers()
+		local n = #NS.LABELS[ELWYNN]
+		assert.are.equal(n, #T.Labels(), "fully explored: every name")
+		open(1415)
+		assert.are.equal(0, #T.Labels())
+		explore({}); open(STORMWIND)
+	end)
+
+	it("puts a halo under the player and follows them", function()
+		_G.__playerPos[STORMWIND] = { 0.5, 0.25 }
+		T.UpdateHalo()
+		local halo = T.Halo()
+		assert.are.equal(3, #halo)
+		for i, t in ipairs(halo) do
+			assert.is_true(t.shown)
+			assert.are.same({ 0, 0, 0 }, { t.vertex[1], t.vertex[2], t.vertex[3] })
+			assert.are.same({ 501, -167 }, { t.point[4], t.point[5] })
+			if i > 1 then assert(t.w < halo[i - 1].w, "rings shrink") end
+		end
+		assert.are.equal(46, halo[1].w)
+		-- screen-sized: a canvas drawn at twice the scale gets half the units
+		local frame = halo[1]:GetParent()
+		frame.scale = 2
+		_G.__playerPos[STORMWIND] = { 0.5, 0.5 }
+		T.UpdateHalo()
+		assert.are.equal(23, halo[1].w)
+		assert.are.same({ 501, -334 }, { halo[1].point[4], halo[1].point[5] })
+		frame.scale = nil
+	end)
+
+	it("hides the halo off the map, on secret positions and on maps it leaves alone", function()
+		local halo = T.Halo()
+		_G.__playerPos[STORMWIND] = nil
+		T.UpdateHalo()
+		assert.is_false(halo[1].shown)
+		local sx = 0.3
+		_G.__secret[sx] = true
+		_G.__playerPos[STORMWIND] = { sx, 0.3 }
+		T.UpdateHalo()
+		assert.is_false(halo[1].shown)
+		_G.__secret[sx] = nil
+		T.UpdateHalo()
+		assert.is_true(halo[1].shown)
+		open(9999)
+		assert.is_false(halo[1].shown)
+		_G.__playerPos[ELWYNN] = { 0.5, 0.5 }
+		open(ELWYNN)
+		assert.is_true(halo[1].shown, "moves to the newly open map")
+		assert.are.equal(T.Active()[1] and T.Active()[1]:GetParent() or halo[1]:GetParent(), halo[1]:GetParent())
+		_G.__playerPos = {}
+		open(STORMWIND)
 	end)
 
 	it("ignores exploration updates on unfogged maps", function()

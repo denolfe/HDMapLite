@@ -27,15 +27,21 @@
 --     through secureexecuterange, isolated);
 --   WorldMapFrame:GetMapID(), .ScrollContainer.Child, and the pin frame-level
 --     manager's GetValidFrameLevel / GetFrameLevelRange (pure reads);
---   C_Map.GetMapArtLayers / GetMapInfo / GetMapRectOnMap and
---     C_MapExplorationInfo.GetExploredMapTextures.
+--   C_Map.GetMapArtLayers / GetMapInfo / GetMapRectOnMap / GetPlayerMapPosition
+--     and C_MapExplorationInfo.GetExploredMapTextures /
+--     GetExploredAreaIDsAtPosition.
 -- No hooksecurefunc, no HookScript on Blizzard frames, no field writes, no
 -- reading or changing Blizzard's pins, no SavedVariables, no globals, no
--- slash commands, no OnUpdate.
+-- slash commands. One throttled OnUpdate, on our own frame, which only runs
+-- while the map is open on a map we draw (it moves the player halo).
+--
+-- Also drawn on our layer: area names on the zone maps (Labels.lua; the stock
+-- art has them painted in), and a soft dark halo under the player arrow so it
+-- stands out on the busier HD art.
 
 local _, ns = ...
 
-local ZONES, FOG = ns.ZONES, ns.FOG
+local ZONES, FOG, LABELS = ns.ZONES, ns.FOG, ns.LABELS or {}
 
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
@@ -45,6 +51,11 @@ local C_MapExplorationInfo = C_MapExplorationInfo
 local EventRegistry = EventRegistry
 local geterrorhandler = geterrorhandler
 local print = print
+local CreateVector2D = CreateVector2D
+local UIParent = UIParent
+local issecretvalue = issecretvalue or function()
+	return false
+end
 local xpcall, pcall, type, ipairs, pairs = xpcall, pcall, type, ipairs, pairs
 local math_max, math_min, math_floor, math_ceil = math.max, math.min, math.floor, math.ceil
 
@@ -107,7 +118,7 @@ local function NewLayer()
 	backdrop:SetAllPoints(frame)
 	backdrop:SetColorTexture(OCEAN_R, OCEAN_G, OCEAN_B, 1)
 	return {
-		frame = frame, backdrop = backdrop, maskOf = {},
+		frame = frame, backdrop = backdrop, maskOf = {}, labels = {},
 		used = {}, prev = {}, spare = {}, keyOf = {},
 		usedMasks = {}, prevMasks = {}, spareMasks = {}, maskKeyOf = {},
 	}
@@ -618,6 +629,141 @@ local function ExploredSignature(mapID)
 	return table.concat(parts, ";")
 end
 
+-- Area labels ---------------------------------------------------------------
+
+local LABEL_FONT = "Fonts\\FRIZQT__.TTF"
+-- Font size per unit of the data's h. Approximate; tune in game.
+local LABEL_FONT_PER_H = 0.85
+local LABEL_COLOR = {
+	c = { 1, 0.82, 0 }, -- capital: game gold
+	t = { 1, 0.82, 0 }, -- town
+	s = { 1, 0.93, 0.72 }, -- subzone: paler, so towns read first
+}
+
+-- Under fog a label shows once its own centre is explored, as the stock map's
+-- painted names (which live on the exploration overlays) do.
+local function LabelExplored(mapID, u, v)
+	if not FOG[mapID] or not ExplorationAvailable() then
+		return true
+	end
+	local query = C_MapExplorationInfo.GetExploredAreaIDsAtPosition
+	if not (query and CreateVector2D) then
+		return true -- can't tell: better a name too many than none
+	end
+	local ok, ids = pcall(query, mapID, CreateVector2D(u, v))
+	return ok and ids ~= nil
+end
+
+-- Draw *mapID*'s labels on layer *L* (nil mapID: none). Font strings load no
+-- files, so they are simply reused in order.
+local function DrawLabels(L, mapID, w, h)
+	local n = 0
+	for _, label in ipairs(mapID and LABELS[mapID] or {}) do
+		local name, kind, size, u, v = label[1], label[2], label[3], label[4], label[5]
+		if LabelExplored(mapID, u, v) then
+			n = n + 1
+			local fs = L.labels[n]
+			if not fs then
+				fs = L.frame:CreateFontString(nil, "OVERLAY")
+				fs:SetShadowOffset(1, -1)
+				fs:SetShadowColor(0, 0, 0, 1)
+				L.labels[n] = fs
+			end
+			local color = LABEL_COLOR[kind] or LABEL_COLOR.s
+			fs:SetFont(LABEL_FONT, size * LABEL_FONT_PER_H, "OUTLINE")
+			fs:SetTextColor(color[1], color[2], color[3], 1)
+			fs:SetText(name)
+			fs:ClearAllPoints()
+			fs:SetPoint("CENTER", L.frame, "TOPLEFT", u * w, -v * h)
+			fs:Show()
+		end
+	end
+	for i = n + 1, #L.labels do
+		L.labels[i]:Hide()
+	end
+	L.nLabels = n
+end
+
+-- Player halo ---------------------------------------------------------------
+--
+-- Rings of a soft dark disc, largest first, in screen pixels (the arrow is a
+-- fixed screen size too, whatever the zoom). Drawn on the open map's layer
+-- under its labels; Blizzard's arrow pin sits far above.
+local HALO = { { 46, 0.22 }, { 34, 0.22 }, { 24, 0.25 } }
+local HALO_FILE = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+local HALO_INTERVAL = 0.05 -- seconds between position updates
+local haloTex = {}
+local haloDriver
+local haloX, haloY, haloLayer, haloK
+
+local function HideHalo()
+	for _, t in ipairs(haloTex) do
+		t:Hide()
+	end
+	haloLayer = nil
+end
+
+local function PlayerPosition(mapID)
+	if not (C_Map and C_Map.GetPlayerMapPosition) then
+		return nil
+	end
+	local ok, pos = pcall(C_Map.GetPlayerMapPosition, mapID, "player")
+	if not (ok and pos and pos.GetXY) then
+		return nil
+	end
+	local x, y = pos:GetXY()
+	if issecretvalue(x) or issecretvalue(y) or type(x) ~= "number" or type(y) ~= "number" then
+		return nil
+	end
+	if (x == 0 and y == 0) or x < 0 or x > 1 or y < 0 or y > 1 then
+		return nil -- not on this map
+	end
+	return x, y
+end
+
+local function UpdateHalo()
+	local L = current
+	local x, y
+	if L and L.drawn then
+		x, y = PlayerPosition(L.mapID)
+	end
+	if not x then
+		if haloLayer then
+			HideHalo()
+		end
+		return
+	end
+	-- Screen pixels to canvas units.
+	local k = 1
+	local cs = L.frame.GetEffectiveScale and L.frame:GetEffectiveScale()
+	local us = UIParent and UIParent.GetEffectiveScale and UIParent:GetEffectiveScale()
+	if type(cs) == "number" and type(us) == "number" and cs > 0 then
+		k = us / cs
+	end
+	if haloLayer == L and x == haloX and y == haloY and k == haloK then
+		return
+	end
+	haloX, haloY, haloK = x, y, k
+	for i, ring in ipairs(HALO) do
+		local t = haloTex[i]
+		if not t then
+			t = L.frame:CreateTexture(nil, "ARTWORK", nil, 7)
+			t:SetTexture(HALO_FILE)
+			t:SetVertexColor(0, 0, 0, ring[2])
+			haloTex[i] = t
+		end
+		if haloLayer ~= L then
+			t:SetParent(L.frame)
+			t:SetDrawLayer("ARTWORK", 7)
+		end
+		t:ClearAllPoints()
+		t:SetPoint("CENTER", L.frame, "TOPLEFT", x * L.w, -y * L.h)
+		t:SetSize(ring[1] * k, ring[1] * k)
+		t:Show()
+	end
+	haloLayer = L
+end
+
 local function HideLayersBut(keep)
 	for _, L in ipairs(layers) do
 		if L ~= keep then
@@ -654,6 +800,7 @@ local function Draw()
 		-- A map we leave alone. Cached layers stay loaded for coming back.
 		current = nil
 		HideLayersBut(nil)
+		HideHalo()
 		overlay:Hide()
 		return
 	end
@@ -686,6 +833,7 @@ local function Draw()
 			drawn = DrawHD(HD_MAPS[mapID], mapID, w, h)
 		end
 		FinishLayer(L)
+		DrawLabels(L, drawn and zone and mapID, w, h)
 		L.drawn = drawn
 		if not drawn then
 			L.dirty = true -- try again next visit rather than cache a failure
@@ -693,6 +841,7 @@ local function Draw()
 	end
 	L.frame:SetShown(L.drawn)
 	overlay:SetShown(L.drawn)
+	UpdateHalo()
 
 	if L.drawn and #L.usedMasks > 0 and settledMapID ~= mapID and not settlePending then
 		settledMapID = mapID
@@ -771,6 +920,18 @@ local function Init()
 
 	-- Our own frame tracks the canvas size, so no hook on Blizzard's.
 	overlay:SetScript("OnSizeChanged", Schedule)
+
+	-- Moves the halo. A child of the overlay, so it only ticks while the map
+	-- is open on a map we draw.
+	haloDriver = CreateFrame("Frame", nil, overlay)
+	local elapsedSince = 0
+	haloDriver:SetScript("OnUpdate", function(_, elapsed)
+		elapsedSince = elapsedSince + elapsed
+		if elapsedSince >= HALO_INTERVAL then
+			elapsedSince = 0
+			xpcall(UpdateHalo, geterrorhandler())
+		end
+	end)
 
 	if EventRegistry and EventRegistry.RegisterCallback then
 		EventRegistry:RegisterCallback("MapCanvas.MapSet", OnMapSet, callbackOwner)
@@ -863,5 +1024,17 @@ ns._test = {
 		wipe(candidateCache)
 	end,
 	Candidates = Candidates,
+	UpdateHalo = UpdateHalo,
+	Halo = function()
+		return haloTex
+	end,
+	-- The open map's shown labels, as font strings.
+	Labels = function()
+		local t = {}
+		for i = 1, current and current.nLabels or 0 do
+			t[i] = current.labels[i]
+		end
+		return t
+	end,
 	NoticeIfArtMissing = NoticeIfArtMissing,
 }

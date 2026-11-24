@@ -6,4 +6,5 @@
 ## IconTexture: Interface\Icons\INV_Misc_Map02
 
 Zones.lua
+Labels.lua
 HDMapLite.lua
