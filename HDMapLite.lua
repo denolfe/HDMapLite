@@ -638,6 +638,7 @@ local LABEL_COLOR = {
 	c = { 1, 0.82, 0 }, -- capital: game gold
 	t = { 1, 0.82, 0 }, -- town
 	s = { 1, 0.93, 0.72 }, -- subzone: paler, so towns read first
+	d = { 1, 0.82, 0 }, -- city district
 }
 
 -- Under fog a label shows once its own centre is explored, as the stock map's

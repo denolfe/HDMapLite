@@ -3,10 +3,10 @@
 --
 -- From High Fidelity World Map by Sectimus (data/AreaLabelData.lua, generated
 -- from the game's own DB2 tables, build 1.60.1.69913; MIT per its CurseForge
--- page). Capitals, towns and subzones only, on the zones Zones.lua draws.
+-- page). Capitals, towns, subzones and city districts, on the zones Zones.lua draws.
 --
 -- [uiMapID] = { { name, kind, h, u, v }, ... }
---   kind: "c" capital, "t" town, "s" subzone
+--   kind: "c" capital, "t" town, "s" subzone, "d" city district
 --   h:    text height in canvas units
 --   u, v: centre, 0..1 from the map's top-left
 
@@ -685,6 +685,37 @@ ns.LABELS = {
 		{ "The Hidden Grove", "s", 10, 0.648, 0.151 },
 		{ "Timbermaw Post", "s", 10, 0.413, 0.447 },
 		{ "Winterfall Village", "s", 10, 0.671, 0.342 },
+	},
+	[1453] = {
+		{ "Cathedral Square", "d", 12, 0.555, 0.521 },
+		{ "Dwarven District", "d", 12, 0.657, 0.360 },
+		{ "Mage Quarter", "d", 12, 0.503, 0.838 },
+		{ "Old Town", "d", 12, 0.741, 0.574 },
+		{ "Stormwind Harbor", "d", 12, 0.176, 0.421 },
+		{ "The Canals", "d", 12, 0.572, 0.621 },
+		{ "The Park", "d", 12, 0.381, 0.680 },
+		{ "Trade District", "d", 12, 0.632, 0.728 },
+		{ "Valley of Heroes", "d", 12, 0.733, 0.853 },
+	},
+	[1454] = {
+		{ "Cleft of Shadow", "d", 12, 0.469, 0.506 },
+		{ "The Drag", "d", 12, 0.588, 0.431 },
+		{ "Valley of Honor", "d", 12, 0.765, 0.292 },
+		{ "Valley of Spirits", "d", 12, 0.369, 0.828 },
+		{ "Valley of Strength", "d", 12, 0.497, 0.686 },
+		{ "Valley of Wisdom", "d", 12, 0.441, 0.393 },
+	},
+	[1456] = {
+		{ "Elder Rise", "d", 12, 0.766, 0.287 },
+		{ "Hunter Rise", "d", 12, 0.575, 0.814 },
+		{ "Spirit Rise", "d", 12, 0.255, 0.192 },
+	},
+	[1457] = {
+		{ "Cenarion Enclave", "d", 12, 0.304, 0.125 },
+		{ "Craftsmen's Terrace", "d", 12, 0.619, 0.125 },
+		{ "The Temple Gardens", "d", 12, 0.335, 0.739 },
+		{ "Tradesmen's Terrace", "d", 12, 0.619, 0.739 },
+		{ "Warrior's Terrace", "d", 12, 0.587, 0.409 },
 	},
 	[1459] = {
 		{ "Dun Baldar", "s", 10, 0.432, 0.166 },

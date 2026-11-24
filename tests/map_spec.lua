@@ -434,6 +434,16 @@ describe("HDMapLite", function()
 		assert.is_true(fs.shown)
 	end)
 
+	it("names every district of an unfogged city", function()
+		open(STORMWIND)
+		local names = {}
+		for _, fs in ipairs(T.Labels()) do names[fs.text] = fs end
+		assert.are.equal(#NS.LABELS[STORMWIND], #T.Labels())
+		assert(names["Trade District"] and names["Mage Quarter"] and names["Old Town"])
+		assert.are.same({ 1, 0.82, 0, 1 }, names["Trade District"].textColor)
+		open(ELWYNN)
+	end)
+
 	it("adds labels as exploration grows, and hides them on continents", function()
 		explore({ [ELWYNN] = { Overlay(380, 400, 100, 100, { 31 }), Overlay(0, 0, 1002, 668, { 32 }) } })
 		FlushTimers()

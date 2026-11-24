@@ -15,8 +15,9 @@ High-resolution world map art for WoW: Forever, with nothing else.
   - Cities and battlegrounds have no fog in the stock UI either, so their zone
     maps are drawn in full. On the continent they show through their
     surrounding zone's reveal.
-- **Area names on zone maps:** towns, capitals and subzones, in gold with a
-  black outline, since the HD art covers the names painted on the stock map.
+- **Area names on zone maps:** towns, capitals, subzones and the districts of
+  Stormwind, Orgrimmar, Thunder Bluff and Darnassus, in gold with a black
+  outline, since the HD art covers the names painted on the stock map.
   Under fog a name appears once its spot is explored, like the stock map's.
 - **Player halo:** a soft dark disc under your arrow so it stands out on the
   busier HD art. It follows you while the map is open.
@@ -43,7 +44,7 @@ hides, moves, re-levels, hooks or writes a field on anything of Blizzard's.
 | `UIDropDownMenu`, `StaticPopup`, Ace3, a settings panel | None |
 | Fog of war by reading Blizzard's live exploration-pin textures (after setting them to alpha 0) and anchoring masks to them | Asks `C_MapExplorationInfo` for the explored overlays and builds its own masks from the same files on its own frame |
 | Continent/world fog from per-zone outline masks, revealing a zone only once it's fully explored or its achievement is earned; tracks visits in SavedVariables | Projects each zone's explored overlays onto the open map with `C_Map.GetMapRectOnMap`, so continents reveal exactly what you've explored. No extra art, no saved state |
-| Area labels with six types, fonts, gradients, fades and custom entries | Towns, capitals and subzones in one fixed style |
+| Area labels with six types, fonts, gradients, fades and custom entries | Towns, capitals, subzones and city districts in one fixed style |
 | Caves, zoom levels, map memory, keep-centred, the HD/SD slider, coordinates | Out of scope |
 
 ## Install
@@ -94,7 +95,7 @@ Turn on BugSack/BugGrabber, and `/console taintLog 1` (the log goes to
 11. **`/reload` mid-combat**, then open the map.
 12. **Gamepad:** switch to the gamepad UI and open the map. Focus navigation
    should behave as before.
-13. **Area names:** in Elwynn Forest and Durotar, names should sit on their
+13. **Area names:** in Elwynn Forest, Durotar and Stormwind, names should sit on their
    places and only appear on explored ground. Check they're readable at
    default zoom and zoomed in. If they're too big or small, tell me.
 14. **Player arrow:** on a zone map and a continent, the arrow should stand
