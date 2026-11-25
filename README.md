@@ -52,7 +52,7 @@ Install **HD Map Lite**. The CurseForge app also installs the
    won't load it. From git:
 
    ```
-   git clone https://github.com/denolfe/hfwm-lite.git HDMapLite
+   git clone https://github.com/denolfe/HDMapLite.git
    ```
 
 2. Install the [*High Fidelity World Map: Art*](https://www.curseforge.com/wow/addons/hfwm-art)
