@@ -2,7 +2,7 @@
 
 High-resolution world map art for WoW: Forever, with nothing else.
 
-![Elwynn Forest: HD art on the explored ground, with Stormwind and the area names, blending into the stock map at the edges](docs/images/elwynn-forest.webp)
+![Elwynn Forest in HD with its area names, from Goldshire to the Stormwind gates](docs/images/elwynn-forest.webp)
 
 | Stormwind, with its districts | Duskwood: unexplored ground stays stock |
 |---|---|
