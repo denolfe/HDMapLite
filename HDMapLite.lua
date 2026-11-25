@@ -803,6 +803,18 @@ local function UpdateHalo()
 	haloLayer = L
 end
 
+-- A child frame sits one level above its parent by default, which would lift
+-- the art off the overlay's level (just above the exploration pins) into the
+-- next pin type's. Pin the art to the overlay's level, and labels and the halo
+-- one above it.
+local function LevelLayer(L, level)
+	if L.level ~= level then
+		L.level = level
+		L.frame:SetFrameLevel(level)
+		L.screen:SetFrameLevel(level + 1)
+	end
+end
+
 local function HideLayersBut(keep)
 	for _, L in ipairs(layers) do
 		if L ~= keep then
@@ -851,6 +863,7 @@ local function Draw()
 	local L = LayerFor(mapID)
 	current = L
 	HideLayersBut(L)
+	LevelLayer(L, overlay:GetFrameLevel())
 	local rebuild = L.dirty or L.w ~= w or L.h ~= h
 	local sig = L.sig
 	if rebuild or L.stale then

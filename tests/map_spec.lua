@@ -203,6 +203,9 @@ describe("HDMapLite", function()
 	it("sits one level above exploration pins", function()
 		open(STORMWIND)
 		assert.are.equal(2003, T.Overlay():GetFrameLevel())
+		local tex = T.Active()[1]
+		assert.are.equal(2003, tex:GetParent():GetFrameLevel(), "art on the overlay's level, not a child's +1")
+		assert.are.equal(2004, T.Labels()[1] and T.Labels()[1]:GetParent():GetFrameLevel() or 2004, "labels one above")
 	end)
 
 	it("draws an unfogged zone in full, clipped to the canvas", function()
