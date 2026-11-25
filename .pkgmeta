@@ -11,3 +11,4 @@ required-dependencies:
 ignore:
   - tests
   - .luacheckrc
+  - TESTING.md
