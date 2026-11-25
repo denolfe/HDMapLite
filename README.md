@@ -1,6 +1,17 @@
 # HD Map Lite
 
-High-resolution world map art for WoW: Forever, with nothing else.
+Replaces the stock world map art in WoW: Forever with high-resolution maps,
+while staying out of the way of other addons: it hooks nothing of
+Blizzard's, writes nothing onto Blizzard's frames, and adds no options,
+bindings or saved settings. It's a lightweight alternative to
+[High Fidelity World Map](https://www.curseforge.com/wow/addons/hfwm) for
+players who only want the maps.
+
+The HD world and continent maps come from another addon on CurseForge,
+[*High Fidelity World Map: Art*](https://www.curseforge.com/wow/addons/hfwm-art),
+which you install alongside this one (see [Install](#install)). HD Map Lite
+ships no art of its own: it draws that pack's tiles, and builds the zone maps
+from the game's own minimap tiles.
 
 ![Elwynn Forest in HD with its area names, from Goldshire to the Stormwind gates](docs/images/elwynn-forest.webp)
 
