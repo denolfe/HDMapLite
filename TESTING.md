@@ -40,7 +40,8 @@ Turn on BugSack/BugGrabber, and `/console taintLog 1` (the log goes to
 13. **Area names:** in Elwynn Forest, Durotar and Stormwind, names should sit
     on their places and only appear on explored ground. They should be
     readable at default zoom and zoomed in, and steady (no pulsing) while
-    zooming.
+    zooming. In Elwynn, The Stonefield Farm and Fargodeep Mine should sit
+    apart at default zoom and slide back onto their spots as you zoom in.
 14. **Player arrow:** on a zone map and a continent, the arrow should stand
     out on a dark halo. The halo should follow you smoothly and stay the same
     size on screen at any zoom. It should vanish inside dungeons.

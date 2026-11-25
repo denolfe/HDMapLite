@@ -668,6 +668,70 @@ end
 -- the canvas's zoom, so its contents never change size on screen; the
 -- anchors they hang from live on the canvas-scaled frame, so they still track
 -- their spot. Only this one SetScale runs per frame while zooming.
+-- Labels that would overlap on screen are moved apart. Placed in order of
+-- importance (capital, then towns and districts, then subzones; list order
+-- within a kind), each label keeps its true spot if it's free, and otherwise
+-- moves straight up or down by the smallest distance that clears every label
+-- already placed. Rerun whenever the zoom changes, so names settle back onto
+-- their spots as room opens up.
+local LABEL_PRIORITY = { c = 1, t = 2, d = 2, s = 3 }
+local LABEL_GAP = 1 -- UI units kept clear between labels
+
+-- Placed label boxes for the layout pass: left, top, right, bottom (screen
+-- units, y down). Reused between passes.
+local boxL, boxT, boxR, boxB = {}, {}, {}, {}
+
+local function Clear(nPlaced, x0, y0, x1, y1)
+	for j = 1, nPlaced do
+		if x0 < boxR[j] and boxL[j] < x1 and y0 < boxB[j] and boxT[j] < y1 then
+			return false
+		end
+	end
+	return true
+end
+
+-- The smallest vertical shift (screen units, down positive) that puts a box
+-- at (x0..x1, y0..y1) clear of the boxes placed so far.
+local function Shift(nPlaced, x0, y0, x1, y1)
+	if Clear(nPlaced, x0, y0, x1, y1) then
+		return 0
+	end
+	local best
+	for j = 1, nPlaced do
+		if x0 < boxR[j] and boxL[j] < x1 then
+			-- just above box j, or just below it
+			local up = boxT[j] - y1
+			local down = boxB[j] - y0
+			if (not best or -up < math.abs(best)) and Clear(nPlaced, x0, y0 + up, x1, y1 + up) then
+				best = up
+			end
+			if (not best or down < math.abs(best)) and Clear(nPlaced, x0, y0 + down, x1, y1 + down) then
+				best = down
+			end
+		end
+	end
+	return best or 0
+end
+
+local function LayoutLabels(L)
+	local n = L.nLabels or 0
+	local inv = 1 / (L.k or 1) -- canvas units to screen units
+	for p = 1, n do
+		local i = L.order[p]
+		local cx, cy = L.lx[i] * inv, L.ly[i] * inv
+		local hw, hh = L.lw[i] / 2 + LABEL_GAP, L.lh[i] / 2
+		local x0, y0, x1, y1 = cx - hw, cy - hh, cx + hw, cy + hh
+		local dy = Shift(p - 1, x0, y0, x1, y1)
+		boxL[p], boxT[p], boxR[p], boxB[p] = x0, y0 + dy, x1, y1 + dy
+		if L.ldy[i] ~= dy then
+			L.ldy[i] = dy
+			local fs = L.labels[i]
+			fs:ClearAllPoints()
+			fs:SetPoint("CENTER", L.anchors[i], "CENTER", 0, -dy)
+		end
+	end
+end
+
 local function ApplyScreenScale(L)
 	local k = 1
 	local cs = L.frame.GetEffectiveScale and L.frame:GetEffectiveScale()
@@ -675,9 +739,13 @@ local function ApplyScreenScale(L)
 	if type(cs) == "number" and type(us) == "number" and cs > 0 and us > 0 then
 		k = us / cs
 	end
-	if L.k ~= k then
-		L.k = k
-		L.screen:SetScale(k)
+	if L.k ~= k or L.labelsMoved then
+		if L.k ~= k then
+			L.k = k
+			L.screen:SetScale(k)
+		end
+		L.labelsMoved = false
+		LayoutLabels(L)
 	end
 end
 
@@ -692,6 +760,9 @@ end
 -- Draw *mapID*'s labels on layer *L* (nil mapID: none). Font strings load no
 -- files, so they are simply reused in order.
 local function DrawLabels(L, mapID, w, h)
+	if not L.order then
+		L.order, L.lx, L.ly, L.lw, L.lh, L.ldy, L.lprio = {}, {}, {}, {}, {}, {}, {}
+	end
 	local n = 0
 	for _, label in ipairs(mapID and LABELS[mapID] or {}) do
 		local name, kind, size, u, v = label[1], label[2], label[3], label[4], label[5]
@@ -714,13 +785,29 @@ local function DrawLabels(L, mapID, w, h)
 			fs:SetText(name)
 			anchor:ClearAllPoints()
 			anchor:SetPoint("CENTER", L.frame, "TOPLEFT", u * w, -v * h)
+			fs:ClearAllPoints()
+			fs:SetPoint("CENTER", anchor, "CENTER")
 			fs:Show()
+			L.lx[n], L.ly[n] = u * w, v * h
+			L.lw[n], L.lh[n] = fs:GetStringWidth() or 0, fs:GetStringHeight() or 0
+			L.ldy[n], L.lprio[n], L.order[n] = 0, LABEL_PRIORITY[kind] or 3, n
 		end
 	end
 	for i = n + 1, #L.labels do
 		L.labels[i]:Hide()
 	end
+	for i = n + 1, #L.order do
+		L.order[i] = nil
+	end
 	L.nLabels = n
+	local prio = L.lprio
+	table.sort(L.order, function(a, b)
+		if prio[a] ~= prio[b] then
+			return prio[a] < prio[b]
+		end
+		return a < b
+	end)
+	L.labelsMoved = true -- lay out on the next ApplyScreenScale
 end
 
 -- Player halo ---------------------------------------------------------------

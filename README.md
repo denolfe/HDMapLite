@@ -28,6 +28,8 @@ High-resolution world map art for WoW: Forever, with nothing else.
   Under fog a name appears once its spot is explored, like the stock map's.
   Names keep a steady size on screen while you zoom (they spread apart rather
   than grow), which keeps the text crisp instead of shimmering.
+  Names that would overlap are nudged up or down, the less important one
+  moving the shortest way, and settle back onto their spots as you zoom in.
 - **Player halo:** a soft dark disc under your arrow so it stands out on the
   busier HD art. It follows you while the map is open.
 - **Everything else** (dungeons, caves, Ironforge, Undercity, other

@@ -34,6 +34,9 @@ end
 function W:CreateFontString(_, layer) local f = New("FontString", self); f.layer = layer; return f end
 function W:SetFont(font, size, flags) self.font, self.size, self.flags = font, size, flags end
 function W:SetText(s) self.text = s end
+-- text metrics: half the font size per character, one font size tall
+function W:GetStringWidth() return #(self.text or "") * (self.size or 0) * 0.5 end
+function W:GetStringHeight() return self.size or 0 end
 function W:SetTextColor(...) self.textColor = { ... } end
 function W:SetShadowOffset(...) self.shadow = { ... } end
 function W.SetShadowColor() end
@@ -453,6 +456,106 @@ describe("HDMapLite", function()
 		assert(names["Trade District"] and names["Mage Quarter"] and names["Old Town"])
 		assert.are.same({ 1, 0.82, 0, 1 }, names["Trade District"].textColor)
 		open(ELWYNN)
+	end)
+
+	describe("overlapping labels", function()
+		local saved
+		local function show(labels)
+			saved = saved or NS.LABELS[STORMWIND]
+			NS.LABELS[STORMWIND] = labels
+			T.ResetHD() -- redraw with these labels
+			open(STORMWIND)
+		end
+		local function byText()
+			local t = {}
+			for _, fs in ipairs(T.Labels()) do t[fs.text] = fs end
+			return t
+		end
+		-- how far a label was moved down (screen units)
+		local function moved(fs) return -(fs.point[5] or 0) end
+		local function box(fs)
+			local a = fs.point[2]
+			local cx, cy = a.point[4], -a.point[5] + moved(fs)
+			local hw, hh = fs:GetStringWidth() / 2, fs:GetStringHeight() / 2
+			return cx - hw, cy - hh, cx + hw, cy + hh
+		end
+		local function overlap(a, b)
+			local ax0, ay0, ax1, ay1 = box(a)
+			local bx0, by0, bx1, by1 = box(b)
+			return ax0 < bx1 and bx0 < ax1 and ay0 < by1 and by0 < ay1
+		end
+		it("moves the less important one down when it sits lower", function()
+			show({ { "Townish", "t", 12, 0.5, 0.5 }, { "Subzonish", "s", 10, 0.5, 0.51 } })
+			local l = byText()
+			assert.are.equal(0, moved(l.Townish))
+			local d = moved(l.Subzonish)
+			-- town box bottom 334 + 5.1; subzone top 340.68 - 4.25: 2.67 down clears it
+			assert(math.abs(d - (339.1 - 336.43)) < 1e-6, "moved " .. d)
+			assert.is_false(overlap(l.Townish, l.Subzonish))
+		end)
+
+		it("moves it up when that's the shorter way", function()
+			show({ { "Townish", "t", 12, 0.5, 0.5 }, { "Subzonish", "s", 10, 0.5, 0.49 } })
+			local l = byText()
+			assert.are.equal(0, moved(l.Townish))
+			assert(moved(l.Subzonish) < 0, "up")
+			assert.is_false(overlap(l.Townish, l.Subzonish))
+		end)
+
+		it("gives way to importance, not list order", function()
+			show({ { "Subzonish", "s", 10, 0.5, 0.51 }, { "Capitalish", "c", 16, 0.5, 0.5 } })
+			local l = byText()
+			assert.are.equal(0, moved(l.Capitalish))
+			assert(moved(l.Subzonish) ~= 0)
+		end)
+
+		it("between equals, the later one moves", function()
+			show({ { "First", "s", 10, 0.5, 0.5 }, { "Second", "s", 10, 0.5, 0.505 } })
+			local l = byText()
+			assert.are.equal(0, moved(l.First))
+			assert(moved(l.Second) > 0)
+		end)
+
+		it("stacks a cluster without any overlaps", function()
+			show({
+				{ "Townish", "t", 12, 0.5, 0.5 },
+				{ "Alpha", "s", 10, 0.5, 0.502 },
+				{ "Bravo", "s", 10, 0.5, 0.498 },
+				{ "Charlie", "s", 10, 0.501, 0.5 },
+			})
+			local list = T.Labels()
+			assert.are.equal(0, moved(byText().Townish))
+			for i = 1, #list do
+				for j = i + 1, #list do
+					assert.is_false(overlap(list[i], list[j]), list[i].text .. " / " .. list[j].text)
+				end
+			end
+		end)
+
+		it("leaves labels that don't touch where they are", function()
+			show({ { "West", "s", 10, 0.2, 0.5 }, { "East", "s", 10, 0.8, 0.5 } })
+			for _, fs in ipairs(T.Labels()) do assert.are.equal(0, moved(fs)) end
+		end)
+
+		it("settles back onto their spots when zooming in makes room", function()
+			show({ { "Townish", "t", 12, 0.5, 0.5 }, { "Subzonish", "s", 10, 0.5, 0.51 } })
+			local sub = byText().Subzonish
+			assert(moved(sub) > 0)
+			local layer = T.Halo()[1] and T.Halo()[1]:GetParent():GetParent() or sub:GetParent():GetParent()
+			layer.scale = 4 -- zoomed in: spots are 4x further apart on screen
+			T.ApplyScreenScale()
+			assert.are.equal(0, moved(sub))
+			layer.scale = nil
+			T.ApplyScreenScale()
+			assert(moved(sub) > 0, "pushed again when zoomed back out")
+		end)
+
+		it("(restores Stormwind's real labels)", function()
+			NS.LABELS[STORMWIND] = saved
+			T.ResetHD(); open(STORMWIND)
+			assert.are.equal(#saved, #T.Labels())
+			open(ELWYNN) -- where the specs below expect to start
+		end)
 	end)
 
 	it("adds labels as exploration grows, and hides them on continents", function()
