@@ -12,3 +12,4 @@ ignore:
   - tests
   - .luacheckrc
   - TESTING.md
+  - docs

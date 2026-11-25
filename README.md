@@ -2,6 +2,12 @@
 
 High-resolution world map art for WoW: Forever, with nothing else.
 
+![Elwynn Forest: HD art on the explored ground, with Stormwind and the area names, blending into the stock map at the edges](docs/images/elwynn-forest.webp)
+
+| Stormwind, with its districts | Duskwood: unexplored ground stays stock |
+|---|---|
+| ![Stormwind City in HD with district names](docs/images/stormwind.webp) | ![Duskwood in HD, with an unexplored patch in the middle showing the stock map](docs/images/duskwood.webp) |
+
 - **World, Kalimdor, Eastern Kingdoms:** the stitched HD tiles from the
   *High Fidelity World Map: Art* pack (`HighFidelityWorldMap_Art_Forever`).
 - **53 zone maps** (outdoor zones, the four capitals it covers, and three
